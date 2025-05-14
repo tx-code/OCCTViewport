@@ -29,25 +29,7 @@ PRIVATE    TKernel TKMath TKG2d TKG3d TKGeomBase TKGeomAlgo TKBRep TKTopAlgo TKP
   glfw
 )
 
-target_compile_options(OcctImgui PRIVATE
-    $<$<CONFIG:Debug>:-g>
-    $<$<CONFIG:Release>:-O3>
-)
-
 target_link_directories(OcctImgui PRIVATE
     $<$<CONFIG:Debug>:${DEBUG_LIBS}>
     $<$<CONFIG:Release>:${RELEASE_LIBS}>
 )
-
-# Debug environment variables (for Windows)
-if(WIN32)
-    set(DEBUG_ENVS "path=%path%;D:/OpenCASCADE-7.7.0/opencascade-7.7.0/win64/vc14/bind")
-    set(RELEASE_ENVS "path=%path%;D:/OpenCASCADE-7.7.0/opencascade-7.7.0/win64/vc14/bin")
-
-    if(CMAKE_BUILD_TYPE STREQUAL "Debug")
-        set_target_properties(OcctImgui PROPERTIES VS_DEBUGGER_ENVIRONMENT "${DEBUG_ENVS}")
-    elseif(CMAKE_BUILD_TYPE STREQUAL "Release")
-        set_target_properties(OcctImgui PROPERTIES VS_DEBUGGER_ENVIRONMENT "${RELEASE_ENVS}")
-    endif()
-endif()
-
