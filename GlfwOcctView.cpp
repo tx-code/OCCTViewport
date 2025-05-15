@@ -43,6 +43,22 @@
 
 #include <GLFW/glfw3.h>
 
+// Platform specific includes for Aspect_Window
+#if defined(_WIN32)
+#include <WNT_Window.hxx>
+#define GLFW_EXPOSE_NATIVE_WIN32
+#define GLFW_EXPOSE_NATIVE_WGL
+#elif defined(__APPLE__)
+#include <Cocoa_Window.hxx>
+#define GLFW_EXPOSE_NATIVE_COCOA
+#define GLFW_EXPOSE_NATIVE_NSGL
+#else // Linux/X11
+#include <Xw_Window.hxx>
+#define GLFW_EXPOSE_NATIVE_X11
+#define GLFW_EXPOSE_NATIVE_GLX
+#endif
+#include <GLFW/glfw3native.h> // For native access
+
 namespace {
 //! Convert GLFW mouse button into Aspect_VKeyMouse.
 static Aspect_VKeyMouse mouseButtonFromGlfw(int theButton) {
@@ -80,9 +96,63 @@ static Aspect_VKeyFlags keyFlagsFromGlfw(int theFlags) {
 // Function : GlfwOcctView
 // Purpose  :
 // ================================================================
-GlfwOcctView::GlfwOcctView() {}
+GlfwOcctView::GlfwOcctView(GLFWwindow *aGlfwWindow)
+    : myGlfwWindow(aGlfwWindow),
+      myOcctAspectWindow(), // Will be initialized in initViewer or constructor
+      myView(), myContext(), myViewCube(), myFixedViewCubeAnimationLoop(true),
+      myGLContext(), myOffscreenFBO(),
+      myRenderWidth(800),  // Default or get from window
+      myRenderHeight(600), // Default or get from window
+      myNeedToResizeFBO(false), myViewport(), myViewPos(),
+      myRenderWindowHasFocus(false) {
+  if (!myGlfwWindow) {
+    Message::DefaultMessenger()->Send(
+        "GlfwOcctView: GLFW window is null on construction.", Message_Fail);
+    return;
+  }
 
-// ================================================================
+  glfwSetWindowUserPointer(myGlfwWindow, this);
+
+  // Set GLFW callbacks
+  glfwSetWindowSizeCallback(myGlfwWindow, GlfwOcctView::onResizeCallback);
+  glfwSetFramebufferSizeCallback(
+      myGlfwWindow, GlfwOcctView::onFBResizeCallback); // Ensure this is correct
+                                                       // for your FBO logic
+  glfwSetScrollCallback(myGlfwWindow, GlfwOcctView::onMouseScrollCallback);
+  glfwSetMouseButtonCallback(myGlfwWindow, GlfwOcctView::onMouseButtonCallback);
+  glfwSetCursorPosCallback(myGlfwWindow, GlfwOcctView::onMouseMoveCallback);
+
+  // Get initial size
+  glfwGetWindowSize(myGlfwWindow, &myRenderWidth, &myRenderHeight);
+  myViewport = ImVec2((float)myRenderWidth, (float)myRenderHeight);
+
+  // Create the OCCT Aspect_Window wrapper
+#if defined(_WIN32)
+  myOcctAspectWindow =
+      new WNT_Window((Aspect_Drawable)glfwGetWin32Window(myGlfwWindow));
+#elif defined(__APPLE__)
+  myOcctAspectWindow =
+      new Cocoa_Window((Aspect_Drawable)glfwGetCocoaWindow(myGlfwWindow));
+#else // Linux/X11
+  Handle(Aspect_DisplayConnection) aDispConn =
+      new Aspect_DisplayConnection((Aspect_XDisplay *)glfwGetX11Display());
+  myOcctAspectWindow =
+      new Xw_Window(aDispConn, (Aspect_Drawable)glfwGetX11Window(myGlfwWindow));
+#endif
+  if (!myOcctAspectWindow.IsNull()) {
+    myOcctAspectWindow->SetVirtual(Standard_True); // Set as virtual
+    // Update window dimensions in Aspect_Window
+    // int fbWidth = 0, fbHeight = 0;
+    // glfwGetFramebufferSize(myGlfwWindow, &fbWidth, &fbHeight);
+    // myOcctAspectWindow->SetSize(fbWidth, fbHeight);
+  } else {
+    Message::DefaultMessenger()->Send(
+        "GlfwOcctView: Failed to create OCCT Aspect_Window wrapper.",
+        Message_Fail);
+  }
+}
+
+// ===============================================================
 // Function : ~GlfwOcctView
 // Purpose  :
 // ================================================================
@@ -111,7 +181,13 @@ void GlfwOcctView::errorCallback(int theError, const char *theDescription) {
 // Purpose  :
 // ================================================================
 void GlfwOcctView::run() {
-  initWindow(1920, 1080, "OCCT IMGUI");
+  // initWindow is removed
+  if (!myGlfwWindow || myOcctAspectWindow.IsNull()) {
+    Message::DefaultMessenger()->Send(
+        "GlfwOcctView::run(): Window not properly initialized.", Message_Fail);
+    return;
+  }
+
   initViewer();
   initDemoScene();
   if (myView.IsNull()) {
@@ -119,54 +195,14 @@ void GlfwOcctView::run() {
   }
 
   // 获取窗口实际大小
-  int aWidth, aHeight;
-  glfwGetWindowSize(myOcctWindow->getGlfwWindow(), &aWidth, &aHeight);
-  myRenderWidth = aWidth;
-  myRenderHeight = aHeight;
-  myViewport = ImVec2(aWidth, aHeight);
+  glfwGetWindowSize(myGlfwWindow, &myRenderWidth, &myRenderHeight);
+  myViewport = ImVec2((float)myRenderWidth, (float)myRenderHeight);
 
   myView->MustBeResized();
-  myOcctWindow->Map();
+  // myOcctWindow->Map(); // This is now handled externally (glfwShowWindow)
   initGui();
   mainloop();
   cleanup();
-}
-
-// ================================================================
-// Function : initWindow
-// Purpose  :
-// ================================================================
-void GlfwOcctView::initWindow(int theWidth, int theHeight,
-                              const char *theTitle) {
-  glfwSetErrorCallback(GlfwOcctView::errorCallback);
-  glfwInit();
-  const bool toAskCoreProfile = true;
-  if (toAskCoreProfile) {
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
-#if defined(__APPLE__)
-    glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);
-#endif
-    glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
-    // glfwWindowHint(GLFW_TRANSPARENT_FRAMEBUFFER, true);
-    // glfwWindowHint(GLFW_DECORATED, GL_FALSE);
-  }
-  myOcctWindow = new GlfwOcctWindow(theWidth, theHeight, theTitle);
-  glfwSetWindowUserPointer(myOcctWindow->getGlfwWindow(), this);
-
-  // window callback
-  glfwSetWindowSizeCallback(myOcctWindow->getGlfwWindow(),
-                            GlfwOcctView::onResizeCallback);
-  glfwSetFramebufferSizeCallback(myOcctWindow->getGlfwWindow(),
-                                 GlfwOcctView::onFBResizeCallback);
-
-  // mouse callback
-  glfwSetScrollCallback(myOcctWindow->getGlfwWindow(),
-                        GlfwOcctView::onMouseScrollCallback);
-  glfwSetMouseButtonCallback(myOcctWindow->getGlfwWindow(),
-                             GlfwOcctView::onMouseButtonCallback);
-  glfwSetCursorPosCallback(myOcctWindow->getGlfwWindow(),
-                           GlfwOcctView::onMouseMoveCallback);
 }
 
 // ================================================================
@@ -174,12 +210,24 @@ void GlfwOcctView::initWindow(int theWidth, int theHeight,
 // Purpose  :
 // ================================================================
 void GlfwOcctView::initViewer() {
-  if (myOcctWindow.IsNull() || myOcctWindow->getGlfwWindow() == nullptr) {
+  // myOcctWindow.IsNull() check is replaced by myGlfwWindow and
+  // myOcctAspectWindow check
+  if (!myGlfwWindow || myOcctAspectWindow.IsNull()) {
     return;
   }
 
+  Handle(Aspect_DisplayConnection) aDispConn;
+#if !defined(_WIN32) && !defined(__APPLE__)     // For X11
+  aDispConn = myOcctAspectWindow->GetDisplay(); // Get from the Xw_Window
+#else
+  // For Windows and macOS, display connection can be null for
+  // OpenGl_GraphicDriver
+  aDispConn = new Aspect_DisplayConnection(); // Or simply pass NULL if allowed
+                                              // by your OCCT version / setup
+#endif
+
   Handle(OpenGl_GraphicDriver) aGraphicDriver =
-      new OpenGl_GraphicDriver(myOcctWindow->GetDisplay(), Standard_False);
+      new OpenGl_GraphicDriver(aDispConn, Standard_False);
   aGraphicDriver->SetBuffersNoSwap(Standard_True);
 
   Handle(V3d_Viewer) aViewer = new V3d_Viewer(aGraphicDriver);
@@ -189,13 +237,28 @@ void GlfwOcctView::initViewer() {
   aViewer->ActivateGrid(Aspect_GT_Rectangular, Aspect_GDM_Lines);
   myView = aViewer->CreateView();
   myView->SetImmediateUpdate(Standard_False);
-  myView->SetWindow(myOcctWindow, myOcctWindow->NativeGlContext());
+
+  // Get native GL context for the second argument of SetWindow
+  Aspect_RenderingContext aNativeGlContext = NULL;
+#if defined(_WIN32)
+  aNativeGlContext = glfwGetWGLContext(myGlfwWindow);
+#elif defined(__APPLE__)
+  aNativeGlContext = (Aspect_RenderingContext)glfwGetNSGLContext(myGlfwWindow);
+#else // Linux/X11
+  aNativeGlContext = glfwGetGLXContext(myGlfwWindow);
+#endif
+  myView->SetWindow(myOcctAspectWindow, aNativeGlContext);
+
   myView->ChangeRenderingParams().ToShowStats = Standard_True;
   myView->ChangeRenderingParams().CollectedStats =
       Graphic3d_RenderingParams::PerfCounters_All;
 
   // 获取OpenGL上下文
   myGLContext = aGraphicDriver->GetSharedContext();
+  if (myGLContext.IsNull()) {
+    Message::DefaultMessenger()->Send(
+        "GlfwOcctView: Failed to get OpenGl_Context.", Message_Fail);
+  }
 
   // 初始化离屏渲染
   initOffscreenRendering();
@@ -209,7 +272,14 @@ void GlfwOcctView::initViewer() {
   myViewCube->SetTransformPersistence(new Graphic3d_TransformPers(
       Graphic3d_TMF_TriedronPers, Aspect_TOTP_LEFT_LOWER,
       Graphic3d_Vec2i(100, 100)));
-  myViewCube->SetViewAnimation(this->ViewAnimation());
+  if (this->ViewAnimation()) {
+    myViewCube->SetViewAnimation(this->ViewAnimation());
+  } else {
+    Message::DefaultMessenger()->Send(
+        "GlfwOcctView: ViewAnimation not available for ViewCube.",
+        Message_Warning);
+  }
+
   if (myFixedViewCubeAnimationLoop) {
     myViewCube->SetDuration(0.1);
     myViewCube->SetFixedAnimationLoop(true);
@@ -226,16 +296,14 @@ void GlfwOcctView::initViewer() {
 // ================================================================
 void GlfwOcctView::initOffscreenRendering() {
   if (myGLContext.IsNull() || myView.IsNull()) {
+    Message::DefaultMessenger()->Send(
+        "GlfwOcctView::initOffscreenRendering(): GLContext or View is Null.",
+        Message_Warning);
     return;
   }
 
   // 获取窗口实际大小
-  int aWidth, aHeight;
-  glfwGetWindowSize(myOcctWindow->getGlfwWindow(), &aWidth, &aHeight);
-
-  // 确保渲染大小与窗口大小一致
-  myRenderWidth = aWidth;
-  myRenderHeight = aHeight;
+  glfwGetFramebufferSize(myGlfwWindow, &myRenderWidth, &myRenderHeight);
 
   // 创建帧缓冲对象
   myOffscreenFBO = Handle(OpenGl_FrameBuffer)::DownCast(
@@ -246,6 +314,9 @@ void GlfwOcctView::initOffscreenRendering() {
         Graphic3d_TOTF_BILINEAR);
     // 将FBO绑定到视图
     myView->View()->SetFBO(myOffscreenFBO);
+  } else {
+    Message::DefaultMessenger()->Send(
+        "GlfwOcctView: Failed to create offscreen FBO.", Message_Fail);
   }
 }
 
@@ -271,7 +342,7 @@ void GlfwOcctView::initGui() {
   IMGUI_CHECKVERSION();
   ImGui::CreateContext();
 
-  ImGui_ImplGlfw_InitForOpenGL(myOcctWindow->getGlfwWindow(), true);
+  ImGui_ImplGlfw_InitForOpenGL(myGlfwWindow, true);
   ImGui_ImplOpenGL3_Init("#version 330");
 }
 
@@ -284,7 +355,9 @@ void GlfwOcctView::renderGui() {
   ImGui::NewFrame();
 
   // 获取当前鼠标位置（调整前）
-  Graphic3d_Vec2i aMousePos = myOcctWindow->CursorPosition();
+  double cursorX, cursorY;
+  glfwGetCursorPos(myGlfwWindow, &cursorX, &cursorY);
+  Graphic3d_Vec2i aMousePos((int)cursorX, (int)cursorY);
   // 计算调整后的鼠标位置
   Graphic3d_Vec2i aAdjustedMousePos =
       adjustMousePosition(aMousePos.x(), aMousePos.y());
@@ -299,6 +372,9 @@ void GlfwOcctView::renderGui() {
   if (ImGui::Begin("Render Info", nullptr,
                    ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
                        ImGuiWindowFlags_NoCollapse)) {
+    int width, height;
+    glfwGetWindowSize(myGlfwWindow, &width, &height);
+    ImGui::Text("Window Size: %d x %d", width, height);
     ImGui::Text("Render Size: %d x %d", myRenderWidth, myRenderHeight);
     ImGui::Text("Need Resize FBO: %s", myNeedToResizeFBO ? "Yes" : "No");
     ImGui::Text("Viewport Size: %.1f x %.1f", myViewport.x, myViewport.y);
@@ -396,7 +472,32 @@ void GlfwOcctView::renderGui() {
       myRenderHeight = (int)aWindowSize.y;
       myNeedToResizeFBO = true;
 
-      // 更新相机纵横比
+      // ADD THIS BLOCK TO UPDATE myOcctAspectWindow SIZE
+      if (!myOcctAspectWindow.IsNull()) {
+// Update the OCCT aspect window's size to match the new FBO/render size
+// This is crucial for correct mouse coordinate mapping by AIS_ViewController
+#if defined(_WIN32)
+        Handle(WNT_Window)::DownCast(myOcctAspectWindow)
+            ->SetPos(0, 0, myRenderWidth, myRenderHeight);
+#elif defined(__APPLE__)
+        // Cocoa_Window might not have a public SetSize after creation for a
+        // virtual window. It typically gets its size from the associated
+        // NSView. If direct sizing is needed and missing, this might require
+        // further investigation for macOS.
+        // Handle(Cocoa_Window)::DownCast(myOcctAspectWindow)->SetSize(myRenderWidth,
+        // myRenderHeight);
+        spdlog::debug("Cocoa_Window size update would be here if SetSize is "
+                      "available and needed.");
+#else // Linux/X11
+        Handle(Xw_Window)::DownCast(myOcctAspectWindow)
+            ->SetSize(myRenderWidth, myRenderHeight);
+#endif
+        if (!myView.IsNull()) {
+          myView->MustBeResized(); // Tell the view its window size has
+                                   // effectively changed
+        }
+      }
+
       if (!myView.IsNull()) {
         Handle(Graphic3d_Camera) aCamera = myView->Camera();
         aCamera->SetAspect((float)myRenderWidth / (float)myRenderHeight);
@@ -409,7 +510,8 @@ void GlfwOcctView::renderGui() {
     resizeOffscreenFramebuffer(myRenderWidth, myRenderHeight);
 
     // 重绘视图
-    myView->Redraw();
+    if (!myView.IsNull())
+      myView->Redraw();
 
     // 获取当前位置并显示渲染纹理
     myViewPos = ImGui::GetCursorScreenPos();
@@ -431,7 +533,7 @@ void GlfwOcctView::renderGui() {
 
   ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
 
-  glfwSwapBuffers(myOcctWindow->getGlfwWindow());
+  glfwSwapBuffers(myGlfwWindow);
 }
 
 // ================================================================
@@ -478,7 +580,9 @@ void GlfwOcctView::initDemoScene() {
 // Purpose  :
 // ================================================================
 void GlfwOcctView::mainloop() {
-  while (!glfwWindowShouldClose(myOcctWindow->getGlfwWindow())) {
+  if (!myGlfwWindow)
+    return;
+  while (!glfwWindowShouldClose(myGlfwWindow)) {
     // glfwPollEvents() for continuous rendering (immediate return if there are
     // no new events) and glfwWaitEvents() for rendering on demand (something
     // actually happened in the viewer)
@@ -507,42 +611,44 @@ void GlfwOcctView::cleanup() {
     myOffscreenFBO->Release(myGLContext.get());
     myOffscreenFBO.Nullify();
   }
+  myGLContext.Nullify();
 
   // Cleanup IMGUI.
   ImGui_ImplOpenGL3_Shutdown();
   ImGui_ImplGlfw_Shutdown();
-  ImGui::DestroyContext();
+  if (ImGui::GetCurrentContext()) { // Check if context exists
+    ImGui::DestroyContext();
+  }
 
   if (!myView.IsNull()) {
     myView->Remove();
   }
-  if (!myOcctWindow.IsNull()) {
-    myOcctWindow->Close();
-  }
+  myOcctAspectWindow.Nullify(); // Release the OCCT wrapper
 
-  glfwTerminate();
+  // glfwTerminate(); // This should be called by the external GLFW manager
 }
 
 // ================================================================
 // Function : onResize
 // Purpose  :
 // ================================================================
-void GlfwOcctView::onResize(int theWidth, int theHeight) {
-  spdlog::info("onResize: {} {}", theWidth, theHeight);
+void GlfwOcctView::onResize(
+    int theWidth,
+    int theHeight) { // theWidth/Height are main GLFW framebuffer size
+  spdlog::info("onResize (main window): {} {}", theWidth, theHeight);
   if (theWidth != 0 && theHeight != 0 && !myView.IsNull()) {
-    myView->Window()->DoResize();
+    // The main GLFW window resized. ImGui will handle its layout in the next
+    // frame. The actual OCCT viewport (FBO and myOcctAspectWindow size) will be
+    // updated in renderGui() based on the ImGui sub-window's new size.
+
+    // We tell the view it might need a general resize/redraw.
+    // myView->Window() which is myOcctAspectWindow will have its size updated
+    // in renderGui.
     myView->MustBeResized();
-
-    // 调整FBO大小
-    if (myRenderWidth != theWidth || myRenderHeight != theHeight) {
-      myRenderWidth = theWidth;
-      myRenderHeight = theHeight;
-      myNeedToResizeFBO = true;
-    }
-
     myView->Invalidate();
-    FlushViewEvents(myContext, myView, true);
-    renderGui();
+    // No need to directly manipulate myOcctAspectWindow's size here with
+    // theWidth, theHeight. No need to set myRenderWidth/myRenderHeight or
+    // myNeedToResizeFBO from here.
   }
 }
 
@@ -552,6 +658,10 @@ void GlfwOcctView::onResize(int theWidth, int theHeight) {
 // ================================================================
 Graphic3d_Vec2i GlfwOcctView::adjustMousePosition(int thePosX,
                                                   int thePosY) const {
+  // Note:
+  // 将屏幕坐标转换为视口坐标，只是修正位置是没用的，还需保证View以及FBO的尺寸与窗口的尺寸一致
+  // See https://dev.opencascade.org/content/render-imgui-viewport
+
   // 根据IMGUI视口位置和大小调整鼠标坐标
   if (myRenderWindowHasFocus) {
     // 如果鼠标在渲染窗口内，则需要相对于渲染视口的左上角计算
@@ -570,12 +680,14 @@ Graphic3d_Vec2i GlfwOcctView::adjustMousePosition(int thePosX,
 void GlfwOcctView::onMouseButton(int theButton, int theAction, int theMods) {
   spdlog::info("onMouseButton: {} {} {}", theButton, theAction, theMods);
 
-  if (myView.IsNull() || !myRenderWindowHasFocus) {
+  if (myView.IsNull() || !myRenderWindowHasFocus || !myGlfwWindow) {
     return;
   }
 
   // 获取调整后的鼠标位置
-  Graphic3d_Vec2i aPos = myOcctWindow->CursorPosition();
+  double cursorX, cursorY;
+  glfwGetCursorPos(myGlfwWindow, &cursorX, &cursorY);
+  Graphic3d_Vec2i aPos((int)cursorX, (int)cursorY);
   Graphic3d_Vec2i aAdjustedPos = adjustMousePosition(aPos.x(), aPos.y());
 
   if (theAction == GLFW_PRESS) {
@@ -596,7 +708,7 @@ void GlfwOcctView::onMouseButton(int theButton, int theAction, int theMods) {
 // Purpose  :
 // ================================================================
 void GlfwOcctView::onMouseMove(int thePosX, int thePosY) {
-  spdlog::info("onMouseMove: {} {}", thePosX, thePosY);
+  // spdlog::info("onMouseMove: {} {}", thePosX, thePosY);
 
   if (myView.IsNull() || !myRenderWindowHasFocus) {
     return;
@@ -617,12 +729,14 @@ void GlfwOcctView::onMouseMove(int thePosX, int thePosY) {
 void GlfwOcctView::onMouseScroll(double theOffsetX, double theOffsetY) {
   spdlog::info("onMouseScroll: {} {}", theOffsetX, theOffsetY);
 
-  if (myView.IsNull() || !myRenderWindowHasFocus) {
+  if (myView.IsNull() || !myRenderWindowHasFocus || !myGlfwWindow) {
     return;
   }
 
   // 获取调整后的鼠标位置
-  Graphic3d_Vec2i aPos = myOcctWindow->CursorPosition();
+  double cursorX, cursorY;
+  glfwGetCursorPos(myGlfwWindow, &cursorX, &cursorY);
+  Graphic3d_Vec2i aPos((int)cursorX, (int)cursorY);
   Graphic3d_Vec2i aAdjustedPos = adjustMousePosition(aPos.x(), aPos.y());
   if (UpdateZoom(Aspect_ScrollDelta(aAdjustedPos, int(theOffsetY * 8.0)))) {
     HandleViewEvents(myContext, myView);

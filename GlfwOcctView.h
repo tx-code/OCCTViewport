@@ -1,17 +1,17 @@
 // MIT License
-// 
+//
 // Copyright(c) 2023 Shing Liu
-// 
+//
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files(the "Software"), to deal
 // in the Software without restriction, including without limitation the rights
 // to use, copy, modify, merge, publish, distribute, sublicense, and / or sell
 // copies of the Software, and to permit persons to whom the Software is
 // furnished to do so, subject to the following conditions :
-// 
-// The above copyright notice and this permission notice shall be included in all
-// copies or substantial portions of the Software.
-// 
+//
+// The above copyright notice and this permission notice shall be included in
+// all copies or substantial portions of the Software.
+//
 // THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 // IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
 // FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.IN NO EVENT SHALL THE
@@ -23,134 +23,135 @@
 #ifndef _GlfwOcctView_Header
 #define _GlfwOcctView_Header
 
-#include "GlfwOcctWindow.h"
-
+#include "imgui.h"
 #include <AIS_InteractiveContext.hxx>
 #include <AIS_ViewController.hxx>
-#include <V3d_View.hxx>
-#include <OpenGl_FrameBuffer.hxx>
-#include <OpenGl_Context.hxx>
 #include <AIS_ViewCube.hxx>
-#include "imgui.h"
+#include <OpenGl_Context.hxx>
+#include <OpenGl_FrameBuffer.hxx>
+#include <V3d_View.hxx>
+
+
+// Forward declaration for GLFWwindow
+struct GLFWwindow;
+// Forward declaration for Aspect_Window
+class Aspect_Window;
 
 // Using protected inheritance because:
 // Public members from AIS_ViewController become protected in GlfwOcctView
 // Prevents external code from directly accessing AIS_ViewController's interface
 // GlfwOcctView can still use these features internally
-class GlfwOcctView : protected AIS_ViewController
-{
+class GlfwOcctView : protected AIS_ViewController {
 public:
-    //! Default constructor.
-    GlfwOcctView();
+  //! Constructor now takes an existing GLFWwindow.
+  GlfwOcctView(GLFWwindow *aGlfwWindow);
 
-    //! Destructor.
-    ~GlfwOcctView();
+  //! Destructor.
+  ~GlfwOcctView();
 
-    //! Main application entry point.
-    void run();
+  //! Main application entry point.
+  void run();
 
 protected:
-    //! Create GLFW window.
-    void initWindow(int theWidth, int theHeight, const char* theTitle);
+  //! Create 3D Viewer.
+  void initViewer();
 
-    //! Create 3D Viewer.
-    void initViewer();
+  //! Init ImGui.
+  void initGui();
 
-    //! Init ImGui.
-    void initGui();
+  //! Render ImGUI.
+  void renderGui();
 
-    //! Render ImGUI.
-    void renderGui();
+  //! Fill 3D Viewer with a DEMO items.
+  void initDemoScene();
 
-    //! Fill 3D Viewer with a DEMO items.
-    void initDemoScene();
+  //! Initialize off-screen rendering.
+  void initOffscreenRendering();
 
-    //! Initialize off-screen rendering.
-    void initOffscreenRendering();
+  //! Resize off-screen framebuffer if needed.
+  void resizeOffscreenFramebuffer(int theWidth, int theHeight);
 
-    //! Resize off-screen framebuffer if needed.
-    void resizeOffscreenFramebuffer(int theWidth, int theHeight);
+  //! Application event loop.
+  void mainloop();
 
-    //! Application event loop.
-    void mainloop();
+  //! Clean up before .
+  void cleanup();
 
-    //! Clean up before .
-    void cleanup();
+  //! Adjust mouse position based on current viewport
+  Graphic3d_Vec2i adjustMousePosition(int thePosX, int thePosY) const;
 
-    //! Adjust mouse position based on current viewport
-    Graphic3d_Vec2i adjustMousePosition(int thePosX, int thePosY) const;
-
-    //! @name GLWF callbacks
+  //! @name GLWF callbacks
 private:
-    //! Window resize event.
-    void onResize(int theWidth, int theHeight);
+  //! Window resize event.
+  void onResize(int theWidth, int theHeight);
 
-    //! Mouse scroll event.
-    void onMouseScroll(double theOffsetX, double theOffsetY);
+  //! Mouse scroll event.
+  void onMouseScroll(double theOffsetX, double theOffsetY);
 
-    //! Mouse click event.
-    void onMouseButton(int theButton, int theAction, int theMods);
+  //! Mouse click event.
+  void onMouseButton(int theButton, int theAction, int theMods);
 
-    //! Mouse move event.
-    void onMouseMove(int thePosX, int thePosY);
+  //! Mouse move event.
+  void onMouseMove(int thePosX, int thePosY);
 
-    //! @name GLWF callbacks (static functions)
+  //! @name GLWF callbacks (static functions)
 private:
+  //! GLFW callback redirecting messages into Message::DefaultMessenger().
+  static void errorCallback(int theError, const char *theDescription);
 
-    //! GLFW callback redirecting messages into Message::DefaultMessenger().
-    static void errorCallback(int theError, const char* theDescription);
+  //! Wrapper for glfwGetWindowUserPointer() returning this class instance.
+  static GlfwOcctView *toView(GLFWwindow *theWin);
 
-    //! Wrapper for glfwGetWindowUserPointer() returning this class instance.
-    static GlfwOcctView* toView(GLFWwindow* theWin);
+  //! Window resize callback.
+  static void onResizeCallback(GLFWwindow *theWin, int theWidth,
+                               int theHeight) {
+    toView(theWin)->onResize(theWidth, theHeight);
+  }
 
-    //! Window resize callback.
-    static void onResizeCallback(GLFWwindow* theWin, int theWidth, int theHeight)
-    {
-        toView(theWin)->onResize(theWidth, theHeight);
-    }
+  //! Frame-buffer resize callback.
+  static void onFBResizeCallback(GLFWwindow *theWin, int theWidth,
+                                 int theHeight) {
+    // This might be the same as onResize for FBO based rendering
+    toView(theWin)->onResize(theWidth, theHeight);
+  }
 
-    //! Frame-buffer resize callback.
-    static void onFBResizeCallback(GLFWwindow* theWin, int theWidth, int theHeight)
-    {
-        toView(theWin)->onResize(theWidth, theHeight);
-    }
+  //! Mouse scroll callback.
+  static void onMouseScrollCallback(GLFWwindow *theWin, double theOffsetX,
+                                    double theOffsetY) {
+    toView(theWin)->onMouseScroll(theOffsetX, theOffsetY);
+  }
 
-    //! Mouse scroll callback.
-    static void onMouseScrollCallback(GLFWwindow* theWin, double theOffsetX, double theOffsetY)
-    {
-        toView(theWin)->onMouseScroll(theOffsetX, theOffsetY);
-    }
+  //! Mouse click callback.
+  static void onMouseButtonCallback(GLFWwindow *theWin, int theButton,
+                                    int theAction, int theMods) {
+    toView(theWin)->onMouseButton(theButton, theAction, theMods);
+  }
 
-    //! Mouse click callback.
-    static void onMouseButtonCallback(GLFWwindow* theWin, int theButton, int theAction, int theMods)
-    {
-        toView(theWin)->onMouseButton(theButton, theAction, theMods);
-    }
-
-    //! Mouse move callback.
-    static void onMouseMoveCallback(GLFWwindow* theWin, double thePosX, double thePosY)
-    {
-        toView(theWin)->onMouseMove((int)thePosX, (int)thePosY);
-    }
+  //! Mouse move callback.
+  static void onMouseMoveCallback(GLFWwindow *theWin, double thePosX,
+                                  double thePosY) {
+    toView(theWin)->onMouseMove((int)thePosX, (int)thePosY);
+  }
 
 private:
+  GLFWwindow *myGlfwWindow; // Stores the externally created GLFW window
+  Handle(Aspect_Window) myOcctAspectWindow; // OCCT's wrapper for the window
 
-    Handle(GlfwOcctWindow) myOcctWindow;
-    Handle(V3d_View) myView;
-    Handle(AIS_InteractiveContext) myContext;
+  Handle(V3d_View) myView;
+  Handle(AIS_InteractiveContext) myContext;
 
-    Handle(AIS_ViewCube) myViewCube;
-    bool myFixedViewCubeAnimationLoop {true}; // 固定动画即意味着在单次更新中完成
-    
-    // 离屏渲染相关
-    Handle(OpenGl_Context) myGLContext;
-    Handle(OpenGl_FrameBuffer) myOffscreenFBO;
-    int myRenderWidth = 800;
-    int myRenderHeight = 600;
-    bool myNeedToResizeFBO = false;
-    ImVec2 myViewport;
-    ImVec2 myViewPos;
-    bool myRenderWindowHasFocus = false;
+  Handle(AIS_ViewCube) myViewCube;
+  bool myFixedViewCubeAnimationLoop{true}; // 固定动画即意味着在单次更新中完成
+
+  // 离屏渲染相关
+  Handle(OpenGl_Context) myGLContext;
+  Handle(OpenGl_FrameBuffer) myOffscreenFBO;
+  int myRenderWidth = 800;
+  int myRenderHeight = 600;
+  bool myNeedToResizeFBO = false;
+  ImVec2 myViewport;
+  ImVec2 myViewPos;
+  bool myRenderWindowHasFocus = false;
 };
 
 #endif // _GlfwOcctView_Header

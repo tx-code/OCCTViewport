@@ -21,20 +21,79 @@
 // SOFTWARE.
 
 #include "GlfwOcctView.h"
+#include <GLFW/glfw3.h>
+#include <iostream>
+#include <stdexcept>
+#include <cstdio>
+
+// GLFW error callback function (can reuse from GlfwOcctView or define a new one)
+static void glfw_error_callback(int error, const char* description)
+{
+    fprintf(stderr, "Glfw Error %d: %s\n", error, description);
+}
 
 int main(int, char**)
 {
-    GlfwOcctView anApp;
+    glfwSetErrorCallback(glfw_error_callback);
+
+    if (!glfwInit())
+    {
+        std::cerr << "Failed to initialize GLFW" << std::endl;
+        return EXIT_FAILURE;
+    }
+
+    // Set GLFW window hints (similar to those previously in GlfwOcctView::initWindow)
+    const bool toAskCoreProfile = true;
+    if (toAskCoreProfile) {
+        glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
+        glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
+#if defined(__APPLE__)
+        glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);
+#endif
+        glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
+    }
+    // glfwWindowHint(GLFW_TRANSPARENT_FRAMEBUFFER, GLFW_TRUE); // Optional
+    // glfwWindowHint(GLFW_DECORATED, GLFW_FALSE); // Optional
+
+
+    // Create GLFW window
+    GLFWwindow* window = glfwCreateWindow(1920, 1080, "OCCT ImGui App", NULL, NULL);
+    if (!window)
+    {
+        std::cerr << "Failed to create GLFW window" << std::endl;
+        glfwTerminate();
+        return EXIT_FAILURE;
+    }
+
+    // Make the window's context current
+    glfwMakeContextCurrent(window);
+    // Enable VSync (optional)
+    glfwSwapInterval(1); 
+
+    // Create GlfwOcctView instance, passing the GLFW window
+    GlfwOcctView anApp(window);
 
     try
     {
+        // Show window before run (previously myOcctWindow->Map() inside GlfwOcctView)
+        glfwShowWindow(window); 
         anApp.run();
     }
     catch (const std::runtime_error& theError)
     {
-        std::cerr << theError.what() << std::endl;
-        return EXIT_FAILURE;
+        std::cerr << "Runtime Error: " << theError.what() << std::endl;
+        // GlfwOcctView::cleanup() no longer handles GLFW window destruction or termination
     }
+    catch (...) // Catch other potential exceptions
+    {
+        std::cerr << "An unknown error occurred." << std::endl;
+    }
+    
+    // GlfwOcctView::cleanup() will handle ImGui and OCCT related resource release
+    // But GLFW window destruction and GLFW termination are now controlled by main
+
+    glfwDestroyWindow(window);
+    glfwTerminate();
 
     return EXIT_SUCCESS;
 }
