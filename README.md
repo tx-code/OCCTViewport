@@ -1,7 +1,7 @@
 # OcctImgui
 OpenCASCADE + GLFW + IMGUI Sample.
 
-![occt imgui](occt-imgui.png "opencascade imgui")
+![occt imgui](OCCTViewport.gif "opencascade imgui")
 
 https://tracker.dev.opencascade.org/view.php?id=33485
 
