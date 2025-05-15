@@ -22,8 +22,8 @@
 
 #include "GlfwOcctView.h"
 
-#include "imgui/imgui_impl_glfw.h"
-#include "imgui/imgui_impl_opengl3.h"
+#include "imgui_impl_glfw.h"
+#include "imgui_impl_opengl3.h"
 
 #include <AIS_AnimationCamera.hxx>
 #include <AIS_Shape.hxx>
@@ -268,9 +268,6 @@ void GlfwOcctView::resizeOffscreenFramebuffer(int theWidth, int theHeight) {
 void GlfwOcctView::initGui() {
   IMGUI_CHECKVERSION();
   ImGui::CreateContext();
-
-  ImGuiIO &aIO = ImGui::GetIO();
-  aIO.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
 
   ImGui_ImplGlfw_InitForOpenGL(myOcctWindow->getGlfwWindow(), true);
   ImGui_ImplOpenGL3_Init("#version 330");

@@ -31,7 +31,7 @@
 #include <OpenGl_FrameBuffer.hxx>
 #include <OpenGl_Context.hxx>
 #include <AIS_ViewCube.hxx>
-#include "imgui/imgui.h"
+#include "imgui.h"
 
 // Using protected inheritance because:
 // Public members from AIS_ViewController become protected in GlfwOcctView
