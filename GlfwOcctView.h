@@ -28,8 +28,15 @@
 #include <AIS_InteractiveContext.hxx>
 #include <AIS_ViewController.hxx>
 #include <V3d_View.hxx>
+#include <OpenGl_FrameBuffer.hxx>
+#include <OpenGl_Context.hxx>
+#include <AIS_ViewCube.hxx>
+#include "imgui/imgui.h"
 
-//! Sample class creating 3D Viewer within GLFW window.
+// Using protected inheritance because:
+// Public members from AIS_ViewController become protected in GlfwOcctView
+// Prevents external code from directly accessing AIS_ViewController's interface
+// GlfwOcctView can still use these features internally
 class GlfwOcctView : protected AIS_ViewController
 {
 public:
@@ -42,8 +49,7 @@ public:
     //! Main application entry point.
     void run();
 
-private:
-
+protected:
     //! Create GLFW window.
     void initWindow(int theWidth, int theHeight, const char* theTitle);
 
@@ -59,15 +65,20 @@ private:
     //! Fill 3D Viewer with a DEMO items.
     void initDemoScene();
 
+    //! Initialize off-screen rendering.
+    void initOffscreenRendering();
+
+    //! Resize off-screen framebuffer if needed.
+    void resizeOffscreenFramebuffer(int theWidth, int theHeight);
+
     //! Application event loop.
     void mainloop();
 
     //! Clean up before .
     void cleanup();
 
-    //! Handle view redraw.
-    void handleViewRedraw(const Handle(AIS_InteractiveContext)& theCtx,
-                          const Handle(V3d_View)& theView) override;
+    //! Adjust mouse position based on current viewport
+    Graphic3d_Vec2i adjustMousePosition(int thePosX, int thePosY) const;
 
     //! @name GLWF callbacks
 private:
@@ -127,8 +138,20 @@ private:
     Handle(GlfwOcctWindow) myOcctWindow;
     Handle(V3d_View) myView;
     Handle(AIS_InteractiveContext) myContext;
-    bool myToWaitEvents = true;
 
+    // 
+    Handle(AIS_ViewCube) myViewCube;
+    bool myFixedViewCubeAnimationLoop {true}; // 固定动画即意味着在单次更新中完成
+    
+    // 离屏渲染相关
+    Handle(OpenGl_Context) myGLContext;
+    Handle(OpenGl_FrameBuffer) myOffscreenFBO;
+    int myRenderWidth = 800;
+    int myRenderHeight = 600;
+    bool myNeedToResizeFBO = false;
+    ImVec2 myViewport;
+    ImVec2 myViewPos;
+    bool myRenderWindowHasFocus = false;
 };
 
 #endif // _GlfwOcctView_Header

@@ -11,6 +11,7 @@ set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib/${CMAKE_BUILD_TYPE})
 # Include directories
 find_package(glfw3 REQUIRED)
 find_package(OpenCASCADE REQUIRED)
+find_package(spdlog REQUIRED)
 
 file(GLOB_RECURSE SOURCES
     "${CMAKE_SOURCE_DIR}/*.cpp"
@@ -27,7 +28,10 @@ add_executable(OcctImgui ${SOURCES})
 target_link_libraries(OcctImgui
 PRIVATE    TKernel TKMath TKG2d TKG3d TKGeomBase TKGeomAlgo TKBRep TKTopAlgo TKPrim TKMesh TKService TKOpenGl TKV3d
   glfw
+  spdlog::spdlog
 )
+
+target_compile_options(OcctImgui PRIVATE /utf-8)
 
 target_link_directories(OcctImgui PRIVATE
     $<$<CONFIG:Debug>:${DEBUG_LIBS}>
