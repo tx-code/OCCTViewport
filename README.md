@@ -1,5 +1,6 @@
 # OcctImgui
 OpenCASCADE + GLFW + IMGUI Sample.
+This is a fork project of https://github.com/eryar/OcctImgui, here I changed it to off-screen rendering method.
 
 ![occt imgui](OCCTViewport.gif "opencascade imgui")
 
@@ -36,10 +37,11 @@ GLFW natively supports Windows, macOS and Linux and other Unix-like systems. On 
 GLFW is licensed under the zlib/libpng license.
 
 ## Build
-Use Premake5 to build OcctImgui or with CMake:
+Use CMake to build the OCCTImGui with vcpkg, before configuring
+this project you should use vcpkg intall imgui,glfw,opencascade,spdlog and so on.
 
 ```
-cmake -DCMAKE_CXX_STANDARD=17 ..
+cmake -DCMAKE_CXX_STANDARD=17 -DCMAKE_TOOLCHAIN_FILE=${vcpkg_root}/.../vcpkg.cmake
 ```
 
 
