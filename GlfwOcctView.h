@@ -23,19 +23,11 @@
 #ifndef _GlfwOcctView_Header
 #define _GlfwOcctView_Header
 
-#include "imgui.h"
-#include <AIS_InteractiveContext.hxx>
-#include <AIS_ViewController.hxx>
-#include <AIS_ViewCube.hxx>
-#include <OpenGl_Context.hxx>
-#include <OpenGl_FrameBuffer.hxx>
-#include <V3d_View.hxx>
+#include <AIS_ViewController.hxx> // Base class
+#include <memory>                 // For std::unique_ptr
 
-
-// Forward declaration for GLFWwindow
+// Forward declarations
 struct GLFWwindow;
-// Forward declaration for Aspect_Window
-class Aspect_Window;
 
 // Using protected inheritance because:
 // Public members from AIS_ViewController become protected in GlfwOcctView
@@ -47,7 +39,7 @@ public:
   GlfwOcctView(GLFWwindow *aGlfwWindow);
 
   //! Destructor.
-  ~GlfwOcctView();
+  ~GlfwOcctView(); // Definition must be in .cpp where ViewInternal is complete
 
   //! Main application entry point.
   void run();
@@ -103,55 +95,27 @@ private:
   static GlfwOcctView *toView(GLFWwindow *theWin);
 
   //! Window resize callback.
-  static void onResizeCallback(GLFWwindow *theWin, int theWidth,
-                               int theHeight) {
-    toView(theWin)->onResize(theWidth, theHeight);
-  }
+  static void onResizeCallback(GLFWwindow *theWin, int theWidth, int theHeight);
 
   //! Frame-buffer resize callback.
   static void onFBResizeCallback(GLFWwindow *theWin, int theWidth,
-                                 int theHeight) {
-    // This might be the same as onResize for FBO based rendering
-    toView(theWin)->onResize(theWidth, theHeight);
-  }
+                                 int theHeight);
 
   //! Mouse scroll callback.
   static void onMouseScrollCallback(GLFWwindow *theWin, double theOffsetX,
-                                    double theOffsetY) {
-    toView(theWin)->onMouseScroll(theOffsetX, theOffsetY);
-  }
+                                    double theOffsetY);
 
   //! Mouse click callback.
   static void onMouseButtonCallback(GLFWwindow *theWin, int theButton,
-                                    int theAction, int theMods) {
-    toView(theWin)->onMouseButton(theButton, theAction, theMods);
-  }
+                                    int theAction, int theMods);
 
   //! Mouse move callback.
   static void onMouseMoveCallback(GLFWwindow *theWin, double thePosX,
-                                  double thePosY) {
-    toView(theWin)->onMouseMove((int)thePosX, (int)thePosY);
-  }
+                                  double thePosY);
 
 private:
-  GLFWwindow *myGlfwWindow; // Stores the externally created GLFW window
-  Handle(Aspect_Window) myOcctAspectWindow; // OCCT's wrapper for the window
-
-  Handle(V3d_View) myView;
-  Handle(AIS_InteractiveContext) myContext;
-
-  Handle(AIS_ViewCube) myViewCube;
-  bool myFixedViewCubeAnimationLoop{true}; // 固定动画即意味着在单次更新中完成
-
-  // 离屏渲染相关
-  Handle(OpenGl_Context) myGLContext;
-  Handle(OpenGl_FrameBuffer) myOffscreenFBO;
-  int myRenderWidth = 800;
-  int myRenderHeight = 600;
-  bool myNeedToResizeFBO = false;
-  ImVec2 myViewport;
-  ImVec2 myViewPos;
-  bool myRenderWindowHasFocus = false;
+  struct ViewInternal;
+  std::unique_ptr<ViewInternal> internal_;
 };
 
 #endif // _GlfwOcctView_Header
