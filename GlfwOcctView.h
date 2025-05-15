@@ -139,7 +139,6 @@ private:
     Handle(V3d_View) myView;
     Handle(AIS_InteractiveContext) myContext;
 
-    // 
     Handle(AIS_ViewCube) myViewCube;
     bool myFixedViewCubeAnimationLoop {true}; // 固定动画即意味着在单次更新中完成
     

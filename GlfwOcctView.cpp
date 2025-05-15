@@ -38,7 +38,7 @@
 #include <OpenGl_Texture.hxx>
 #include <TopAbs_ShapeEnum.hxx>
 
-
+#include <V3d_TypeOfView.hxx>
 #include <spdlog/spdlog.h>
 
 #include <GLFW/glfw3.h>
@@ -111,7 +111,7 @@ void GlfwOcctView::errorCallback(int theError, const char *theDescription) {
 // Purpose  :
 // ================================================================
 void GlfwOcctView::run() {
-  initWindow(800, 600, "OCCT IMGUI");
+  initWindow(1920, 1080, "OCCT IMGUI");
   initViewer();
   initDemoScene();
   if (myView.IsNull()) {
@@ -185,12 +185,14 @@ void GlfwOcctView::initViewer() {
   Handle(V3d_Viewer) aViewer = new V3d_Viewer(aGraphicDriver);
   aViewer->SetDefaultLights();
   aViewer->SetLightOn();
-  aViewer->SetDefaultTypeOfView(V3d_PERSPECTIVE);
+  aViewer->SetDefaultTypeOfView(V3d_ORTHOGRAPHIC);
   aViewer->ActivateGrid(Aspect_GT_Rectangular, Aspect_GDM_Lines);
   myView = aViewer->CreateView();
   myView->SetImmediateUpdate(Standard_False);
   myView->SetWindow(myOcctWindow, myOcctWindow->NativeGlContext());
   myView->ChangeRenderingParams().ToShowStats = Standard_True;
+  myView->ChangeRenderingParams().CollectedStats =
+      Graphic3d_RenderingParams::PerfCounters_All;
 
   // 获取OpenGL上下文
   myGLContext = aGraphicDriver->GetSharedContext();
@@ -372,6 +374,9 @@ void GlfwOcctView::renderGui() {
     }
   }
   ImGui::End();
+
+  static bool showDemoWindow = true;
+  ImGui::ShowDemoWindow(&showDemoWindow);
 
   // 右侧视图窗口
   ImGui::SetNextWindowPos(ImVec2(infoWidth, 0));
@@ -573,8 +578,6 @@ void GlfwOcctView::onMouseButton(int theButton, int theAction, int theMods) {
   Graphic3d_Vec2i aPos = myOcctWindow->CursorPosition();
   Graphic3d_Vec2i aAdjustedPos = adjustMousePosition(aPos.x(), aPos.y());
 
-  spdlog::info("AIS process mouse button event");
-
   if (theAction == GLFW_PRESS) {
     if (PressMouseButton(aAdjustedPos, mouseButtonFromGlfw(theButton),
                          keyFlagsFromGlfw(theMods), false)) {
@@ -599,8 +602,6 @@ void GlfwOcctView::onMouseMove(int thePosX, int thePosY) {
     return;
   }
 
-  spdlog::info("AIS process mouse move event");
-
   // 使用adjustMousePosition函数获取调整后的鼠标位置
   Graphic3d_Vec2i aAdjustedPos = adjustMousePosition(thePosX, thePosY);
   if (UpdateMousePosition(aAdjustedPos, PressedMouseButtons(), LastMouseFlags(),
@@ -619,8 +620,6 @@ void GlfwOcctView::onMouseScroll(double theOffsetX, double theOffsetY) {
   if (myView.IsNull() || !myRenderWindowHasFocus) {
     return;
   }
-
-  spdlog::info("AIS process mouse scroll event");
 
   // 获取调整后的鼠标位置
   Graphic3d_Vec2i aPos = myOcctWindow->CursorPosition();
