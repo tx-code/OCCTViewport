@@ -594,8 +594,7 @@ void GlfwOcctView::onMouseButton(int theButton, int theAction, int theMods) {
 
   double cursorX, cursorY;
   glfwGetCursorPos(internal_->glfwWindow, &cursorX, &cursorY);
-  Graphic3d_Vec2i aPos((int)cursorX, (int)cursorY);
-  Graphic3d_Vec2i aAdjustedPos = adjustMousePosition(aPos.x(), aPos.y());
+  Graphic3d_Vec2i aAdjustedPos = adjustMousePosition((int)cursorX, (int)cursorY);
 
   if (theAction == GLFW_PRESS) {
     if (PressMouseButton(aAdjustedPos, mouseButtonFromGlfw(theButton),
@@ -612,6 +611,9 @@ void GlfwOcctView::onMouseButton(int theButton, int theAction, int theMods) {
 
 void GlfwOcctView::onMouseMove(int thePosX, int thePosY) {
   if (internal_->view.IsNull() || !internal_->renderWindowHasFocus) {
+    // When we are not in the render window, we need to reset the view input
+    // to avoid accumulating mouse movements
+    ResetViewInput();
     return;
   }
   Graphic3d_Vec2i aAdjustedPos = adjustMousePosition(thePosX, thePosY);
@@ -630,7 +632,7 @@ void GlfwOcctView::onMouseScroll(double theOffsetX, double theOffsetY) {
   double cursorX, cursorY;
   glfwGetCursorPos(internal_->glfwWindow, &cursorX, &cursorY);
   Graphic3d_Vec2i aAdjustedPos = adjustMousePosition(cursorX, cursorY);
-  if (UpdateZoom(Aspect_ScrollDelta(aAdjustedPos, int(theOffsetY * 8.0)))) {
+  if (UpdateZoom(Aspect_ScrollDelta(aAdjustedPos, int(theOffsetY * myScrollZoomRatio)))) {
     HandleViewEvents(internal_->context, internal_->view);
   }
 }
