@@ -36,10 +36,12 @@
 #include <Aspect_Handle.hxx>
 #include <BRepPrimAPI_MakeBox.hxx>
 #include <BRepPrimAPI_MakeCone.hxx>
+#include <ElSLib.hxx>
 #include <OpenGl_Context.hxx>
 #include <OpenGl_FrameBuffer.hxx>
 #include <OpenGl_GraphicDriver.hxx>
 #include <OpenGl_Texture.hxx>
+#include <ProjLib.hxx>
 #include <V3d_TypeOfView.hxx>
 #include <V3d_View.hxx>
 
@@ -68,7 +70,9 @@ struct GlfwOcctView::ViewInternal {
   GLFWwindow *glfwWindow{nullptr}; // Stores the externally created GLFW window
   Handle(Aspect_Window) occtAspectWindow; // OCCT's wrapper for the window
 
-  Handle(V3d_View) view;                  // OCCT 3D View
+  Handle(V3d_View) view; // OCCT 3D View
+  gp_Pnt positionInView; // 3D position in the view (converted from screen
+                         // coordinates)
   Handle(AIS_InteractiveContext) context; // OCCT Interactive Context
 
   Handle(AIS_ViewCube) viewCube; // AIS ViewCube for scene orientation
@@ -383,6 +387,9 @@ void GlfwOcctView::renderGui() {
     if (internal_->renderWindowHasFocus) {
       ImGui::Text("Mouse Offset: %d, %d", aMousePos.x() - aAdjustedMousePos.x(),
                   aMousePos.y() - aAdjustedMousePos.y());
+      ImGui::Text("Position in View: %.3f, %.3f, %.3f",
+                  internal_->positionInView.X(), internal_->positionInView.Y(),
+                  internal_->positionInView.Z());
     }
 
     if (internal_->renderWindowHasFocus) {
@@ -594,7 +601,8 @@ void GlfwOcctView::onMouseButton(int theButton, int theAction, int theMods) {
 
   double cursorX, cursorY;
   glfwGetCursorPos(internal_->glfwWindow, &cursorX, &cursorY);
-  Graphic3d_Vec2i aAdjustedPos = adjustMousePosition((int)cursorX, (int)cursorY);
+  Graphic3d_Vec2i aAdjustedPos =
+      adjustMousePosition((int)cursorX, (int)cursorY);
 
   if (theAction == GLFW_PRESS) {
     if (PressMouseButton(aAdjustedPos, mouseButtonFromGlfw(theButton),
@@ -616,7 +624,17 @@ void GlfwOcctView::onMouseMove(int thePosX, int thePosY) {
     ResetViewInput();
     return;
   }
+
   Graphic3d_Vec2i aAdjustedPos = adjustMousePosition(thePosX, thePosY);
+
+  // Record the 3D position in the view
+  auto selector = internal_->context->MainSelector();
+  selector->Pick(aAdjustedPos.x(), aAdjustedPos.y(), internal_->view);
+  internal_->positionInView =
+      selector->NbPicked() > 0
+          ? selector->PickedPoint(1)
+          : screenToViewCoordinates(aAdjustedPos.x(), aAdjustedPos.y());
+
   if (UpdateMousePosition(aAdjustedPos, PressedMouseButtons(), LastMouseFlags(),
                           Standard_False)) {
     HandleViewEvents(internal_->context, internal_->view);
@@ -632,7 +650,31 @@ void GlfwOcctView::onMouseScroll(double theOffsetX, double theOffsetY) {
   double cursorX, cursorY;
   glfwGetCursorPos(internal_->glfwWindow, &cursorX, &cursorY);
   Graphic3d_Vec2i aAdjustedPos = adjustMousePosition(cursorX, cursorY);
-  if (UpdateZoom(Aspect_ScrollDelta(aAdjustedPos, int(theOffsetY * myScrollZoomRatio)))) {
+  if (UpdateZoom(Aspect_ScrollDelta(aAdjustedPos,
+                                    int(theOffsetY * myScrollZoomRatio)))) {
     HandleViewEvents(internal_->context, internal_->view);
   }
+}
+
+// Convert screen coordinates to 3D coordinates in the view
+// copy from mayo: graphics_utils.cpp
+gp_Pnt GlfwOcctView::screenToViewCoordinates(int theX, int theY) const {
+  double xEye, yEye, zEye, xAt, yAt, zAt;
+  internal_->view->Eye(xEye, yEye, zEye);
+  internal_->view->At(xAt, yAt, zAt);
+  const gp_Pnt pntEye(xEye, yEye, zEye);
+  const gp_Pnt pntAt(xAt, yAt, zAt);
+
+  const gp_Vec vecEye(pntEye, pntAt);
+  const bool vecEyeNotNull = vecEye.SquareMagnitude() > gp::Resolution();
+  const gp_Dir dirEye(vecEyeNotNull ? vecEye : gp_Vec{0, 0, 1});
+
+  const gp_Pln planeView(pntAt, dirEye);
+  double px, py, pz;
+  internal_->view->Convert(theX, theY, px, py, pz);
+  const gp_Pnt pntConverted(px, py, pz);
+  const gp_Pnt2d pntConvertedOnPlane =
+      ProjLib::Project(planeView, pntConverted);
+  return ElSLib::Value(pntConvertedOnPlane.X(), pntConvertedOnPlane.Y(),
+                       planeView);
 }

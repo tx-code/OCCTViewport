@@ -25,6 +25,7 @@
 
 #include <AIS_ViewController.hxx> // Base class
 #include <memory>                 // For std::unique_ptr
+#include <gp_Pnt.hxx>
 
 // Forward declarations
 struct GLFWwindow;
@@ -112,6 +113,11 @@ private:
   //! Mouse move callback.
   static void onMouseMoveCallback(GLFWwindow *theWin, double thePosX,
                                   double thePosY);
+
+  // Helper functions
+private:
+
+  gp_Pnt screenToViewCoordinates(int theX, int theY) const;
 
 private:
   struct ViewInternal;
