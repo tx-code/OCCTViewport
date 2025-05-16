@@ -503,6 +503,10 @@ void GlfwOcctView::renderGui() {
         internal_->context->Activate(AIS_Shape::SelectionMode(TopAbs_COMPOUND));
       }
     }
+    // Activate the view cube to allow it to be normally selected
+    // FIXME: if we activate the selection mode for each object except the view cube, we don't need 
+    // to activate the view cube here
+    internal_->context->Activate(internal_->viewCube);
   }
   ImGui::End();
 
@@ -609,6 +613,7 @@ void GlfwOcctView::initDemoScene() {
 void GlfwOcctView::mainloop() {
   if (!internal_->glfwWindow)
     return;
+  
   while (!glfwWindowShouldClose(internal_->glfwWindow)) {
     if (!toAskNextFrame()) { // toAskNextFrame is from AIS_ViewController
       glfwWaitEvents();
@@ -616,7 +621,7 @@ void GlfwOcctView::mainloop() {
       glfwPollEvents();
     }
     if (!internal_->view.IsNull()) {
-      internal_->view->InvalidateImmediate();
+      // No need to invalidate the immediate layer each frame
       FlushViewEvents(internal_->context, internal_->view, Standard_True);
       renderGui();
     }
@@ -645,7 +650,7 @@ void GlfwOcctView::cleanup() {
 void GlfwOcctView::onResize(int theWidth, int theHeight) {
   if (theWidth != 0 && theHeight != 0 && !internal_->view.IsNull()) {
     internal_->view->MustBeResized();
-    internal_->view->Invalidate();
+    internal_->view->Invalidate(); // invalidate the whole view
   }
 }
 
@@ -672,12 +677,12 @@ void GlfwOcctView::onMouseButton(int theButton, int theAction, int theMods) {
   if (theAction == GLFW_PRESS) {
     if (PressMouseButton(aAdjustedPos, mouseButtonFromGlfw(theButton),
                          keyFlagsFromGlfw(theMods), false)) {
-      HandleViewEvents(internal_->context, internal_->view);
+      internal_->view->InvalidateImmediate();
     }
   } else {
     if (ReleaseMouseButton(aAdjustedPos, mouseButtonFromGlfw(theButton),
                            keyFlagsFromGlfw(theMods), false)) {
-      HandleViewEvents(internal_->context, internal_->view);
+      internal_->view->InvalidateImmediate();
     }
   }
 }
@@ -702,7 +707,7 @@ void GlfwOcctView::onMouseMove(int thePosX, int thePosY) {
 
   if (UpdateMousePosition(aAdjustedPos, PressedMouseButtons(), LastMouseFlags(),
                           Standard_False)) {
-    HandleViewEvents(internal_->context, internal_->view);
+    internal_->view->InvalidateImmediate();
   }
 }
 
@@ -717,7 +722,7 @@ void GlfwOcctView::onMouseScroll(double theOffsetX, double theOffsetY) {
   Graphic3d_Vec2i aAdjustedPos = adjustMousePosition(cursorX, cursorY);
   if (UpdateZoom(Aspect_ScrollDelta(aAdjustedPos,
                                     int(theOffsetY * myScrollZoomRatio)))) {
-    HandleViewEvents(internal_->context, internal_->view);
+    internal_->view->InvalidateImmediate();
   }
 }
 
