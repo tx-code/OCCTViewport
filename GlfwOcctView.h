@@ -23,12 +23,17 @@
 #ifndef _GlfwOcctView_Header
 #define _GlfwOcctView_Header
 
+#include <AIS_InteractiveObject.hxx>
 #include <AIS_ViewController.hxx> // Base class
 #include <memory>                 // For std::unique_ptr
 #include <gp_Pnt.hxx>
+#include <Quantity_Color.hxx>     // For Quantity_Color
 
 // Forward declarations
 struct GLFWwindow;
+class Prs3d_Drawer;
+class AIS_Shape; 
+class AIS_InteractiveObject;
 
 // Using protected inheritance because:
 // Public members from AIS_ViewController become protected in GlfwOcctView
@@ -116,8 +121,13 @@ private:
 
   // Helper functions
 private:
-
   gp_Pnt screenToViewCoordinates(int theX, int theY) const;
+
+  //! Configure the highlight style for the given drawer
+  void configureHighlightStyle(const Handle(Prs3d_Drawer)& theDrawer, Quantity_Color fillAreaColor);
+
+  //! Setup the default AIS drawer for nice shape display (shaded with edges)
+  void setupDefaultAISDrawer();
 
 private:
   struct ViewInternal;

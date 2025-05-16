@@ -23,6 +23,9 @@
 #include "GlfwOcctView.h"
 
 // ImGui
+#include <AIS_DisplayMode.hxx>
+#include <Prs3d_TypeOfHighlight.hxx>
+#include <TopAbs_ShapeEnum.hxx>
 #include <imgui.h>
 #include <imgui_impl_glfw.h>
 #include <imgui_impl_opengl3.h>
@@ -37,11 +40,14 @@
 #include <BRepPrimAPI_MakeBox.hxx>
 #include <BRepPrimAPI_MakeCone.hxx>
 #include <ElSLib.hxx>
+#include <Graphic3d_AspectFillArea3d.hxx>
+#include <Graphic3d_MaterialAspect.hxx>
 #include <OpenGl_Context.hxx>
 #include <OpenGl_FrameBuffer.hxx>
 #include <OpenGl_GraphicDriver.hxx>
 #include <OpenGl_Texture.hxx>
 #include <ProjLib.hxx>
+#include <Prs3d_LineAspect.hxx>
 #include <V3d_TypeOfView.hxx>
 #include <V3d_View.hxx>
 
@@ -67,31 +73,44 @@
 
 // Definition of the PIMPL struct
 struct GlfwOcctView::ViewInternal {
-  GLFWwindow *glfwWindow{nullptr}; // Stores the externally created GLFW window
-  Handle(Aspect_Window) occtAspectWindow; // OCCT's wrapper for the window
+  //! GLFW window
+  GLFWwindow *glfwWindow{nullptr};
+  //! OCCT's wrapper for the window
+  Handle(Aspect_Window) occtAspectWindow;
+  //! OCCT 3D View
+  Handle(V3d_View) view;
+  //! 3D position in the view (converted from screen coordinates)
+  gp_Pnt positionInView;
+  //! OCCT Interactive Context
+  Handle(AIS_InteractiveContext) context;
 
-  Handle(V3d_View) view; // OCCT 3D View
-  gp_Pnt positionInView; // 3D position in the view (converted from screen
-                         // coordinates)
-  Handle(AIS_InteractiveContext) context; // OCCT Interactive Context
+  //! AIS ViewCube for scene orientation
+  Handle(AIS_ViewCube) viewCube;
+  //! If true, ViewCube animation completes in a single update
+  bool fixedViewCubeAnimationLoop{true};
 
-  Handle(AIS_ViewCube) viewCube; // AIS ViewCube for scene orientation
-  bool fixedViewCubeAnimationLoop{
-      true}; // If true, ViewCube animation completes in a single update
+  //! OpenGL graphics context
+  Handle(OpenGl_Context) glContext;
+  //! Framebuffer for offscreen rendering
+  Handle(OpenGl_FrameBuffer) offscreenFBO;
+  //! Initial width of the offscreen render target
+  int renderWidth{800};
+  //! Initial height of the offscreen render target
+  int renderHeight{600};
+  //! Flag to indicate if the FBO needs resizing
+  bool needToResizeFBO{false};
+  //! Dimensions of the ImGui viewport displaying the render
+  ImVec2 viewport{0.0f, 0.0f};
+  //! Position of the ImGui viewport displaying the render
+  ImVec2 viewPos{0.0f, 0.0f};
+  //! True if the ImGui window containing the render has focus
+  bool renderWindowHasFocus{false};
 
-  // Offscreen rendering related members
-  Handle(OpenGl_Context) glContext; // OpenGL graphics context
-  Handle(OpenGl_FrameBuffer)
-      offscreenFBO;            // Framebuffer for offscreen rendering
-  int renderWidth{800};        // Initial width of the offscreen render target
-  int renderHeight{600};       // Initial height of the offscreen render target
-  bool needToResizeFBO{false}; // Flag to indicate if the FBO needs resizing
-  ImVec2 viewport{
-      0.0f, 0.0f}; // Dimensions of the ImGui viewport displaying the render
-  ImVec2 viewPos{0.0f,
-                 0.0f}; // Position of the ImGui viewport displaying the render
-  bool renderWindowHasFocus{
-      false}; // True if the ImGui window containing the render has focus
+  /// Visual properties
+  //! Flag to indicate if custom highlight style is configured
+  bool configureCustomHighlightStyle{true};
+  //! Flag to indicate if default drawer is configured
+  bool configureDefaultDrawer{true};
 };
 
 namespace { // Anonymous namespace for static helper functions from original
@@ -296,6 +315,25 @@ void GlfwOcctView::initViewer() {
     internal_->viewCube->SetFixedAnimationLoop(false);
   }
   internal_->context->Display(internal_->viewCube, false);
+
+  /// Additional initialization
+  if (internal_->configureDefaultDrawer) {
+    setupDefaultAISDrawer();
+  }
+
+  if (internal_->configureCustomHighlightStyle) {
+    spdlog::info(
+        "GlfwOcctView::initViewer(): Configuring custom highlight style.");
+    // light blue
+    Quantity_Color highlightColor(128.0 / 255.0, 200.0 / 255.0, 255.0 / 255.0,
+                                  Quantity_TOC_RGB);
+    configureHighlightStyle(
+        internal_->context->HighlightStyle(Prs3d_TypeOfHighlight_LocalSelected),
+        highlightColor);
+    configureHighlightStyle(
+        internal_->context->HighlightStyle(Prs3d_TypeOfHighlight_Selected),
+        highlightColor);
+  }
 }
 
 void GlfwOcctView::initOffscreenRendering() {
@@ -379,7 +417,7 @@ void GlfwOcctView::renderGui() {
     ImGui::Text("Mouse Over Render Area: %s",
                 internal_->renderWindowHasFocus ? "Yes" : "No");
 
-    ImGui::Separator();
+    ImGui::SeparatorText("Mouse Position");
     ImGui::Text("Mouse Position (Original): %d, %d", aMousePos.x(),
                 aMousePos.y());
     ImGui::Text("Mouse Position (Adjusted): %d, %d", aAdjustedMousePos.x(),
@@ -393,8 +431,7 @@ void GlfwOcctView::renderGui() {
     }
 
     if (internal_->renderWindowHasFocus) {
-      ImGui::Separator();
-      ImGui::Text("Mouse States:");
+      ImGui::SeparatorText("Mouse States");
       ImGui::Text("Last Mouse Position: %d, %d", LastMousePosition().x(),
                   LastMousePosition().y());
       Aspect_VKeyMouse aButtons = PressedMouseButtons();
@@ -428,7 +465,7 @@ void GlfwOcctView::renderGui() {
     ImGui::Separator();
     ImGui::Text("Framerate: %.1f FPS", ImGui::GetIO().Framerate);
 
-    ImGui::Separator();
+    ImGui::SeparatorText("View Cube");
     if (ImGui::Checkbox("Fixed View Cube Animation Loop",
                         &internal_->fixedViewCubeAnimationLoop)) {
       if (internal_->fixedViewCubeAnimationLoop) {
@@ -437,6 +474,33 @@ void GlfwOcctView::renderGui() {
       } else {
         internal_->viewCube->SetDuration(0.5);
         internal_->viewCube->SetFixedAnimationLoop(false);
+      }
+    }
+
+    ImGui::SeparatorText("Selection");
+    static bool vertexSelection = false;
+    static bool edgeSelection = false;
+    static bool faceSelection = false;
+    static bool compoundSelection = false;
+    bool changed = ImGui::Checkbox("Vertex", &vertexSelection);
+    changed |= ImGui::Checkbox("Edge", &edgeSelection);
+    changed |= ImGui::Checkbox("Face", &faceSelection);
+    changed |= ImGui::Checkbox("Compound", &compoundSelection);
+
+    if (changed) {
+      internal_->context->Deactivate();
+      // FIXME: activate the selection mode for each displayed object
+      if (vertexSelection) {
+        internal_->context->Activate(AIS_Shape::SelectionMode(TopAbs_VERTEX));
+      }
+      if (edgeSelection) {
+        internal_->context->Activate(AIS_Shape::SelectionMode(TopAbs_EDGE));
+      }
+      if (faceSelection) {
+        internal_->context->Activate(AIS_Shape::SelectionMode(TopAbs_FACE));
+      }
+      if (compoundSelection) {
+        internal_->context->Activate(AIS_Shape::SelectionMode(TopAbs_COMPOUND));
       }
     }
   }
@@ -519,6 +583,7 @@ void GlfwOcctView::initDemoScene() {
   Handle(AIS_Shape) aBox =
       new AIS_Shape(BRepPrimAPI_MakeBox(anAxis, 50, 50, 50).Shape());
   internal_->context->Display(aBox, AIS_Shaded, 0, false);
+
   anAxis.SetLocation(gp_Pnt(25.0, 125.0, 0.0));
   Handle(AIS_Shape) aCone =
       new AIS_Shape(BRepPrimAPI_MakeCone(anAxis, 25, 0, 50).Shape());
@@ -677,4 +742,103 @@ gp_Pnt GlfwOcctView::screenToViewCoordinates(int theX, int theY) const {
       ProjLib::Project(planeView, pntConverted);
   return ElSLib::Value(pntConvertedOnPlane.X(), pntConvertedOnPlane.Y(),
                        planeView);
+}
+
+// copy from mayo: MainWindow.cpp
+void GlfwOcctView::configureHighlightStyle(const Handle(Prs3d_Drawer) &
+                                               theDrawer,
+                                           Quantity_Color fillAreaColor) {
+  // Create a new AspectFillArea3d for the highlight style
+  auto fillArea = new Graphic3d_AspectFillArea3d;
+
+  // Try to copy properties from the default shading aspect
+  // This means the highlighted object will retain some of its original
+  // appearance (like material) but its color will be overridden by the
+  // highlight color.
+  auto defaultShadingAspect =
+      internal_->context->DefaultDrawer()->ShadingAspect();
+  if (defaultShadingAspect && defaultShadingAspect->Aspect())
+    *fillArea =
+        *defaultShadingAspect->Aspect(); // Copy existing aspect settings
+
+  // Set the interior color of the fill area
+  fillArea->SetInteriorColor(fillAreaColor);
+
+  // Define a material for the fill area (e.g., PLASTER)
+  Graphic3d_MaterialAspect fillMaterial(Graphic3d_NOM_PLASTER);
+  fillMaterial.SetColor(fillAreaColor); // Set material color
+  // fillMaterial.SetTransparency(0.1f); // Optional: can set transparency
+
+  // Apply the material to both front and back faces
+  fillArea->SetFrontMaterial(fillMaterial);
+  fillArea->SetBackMaterial(fillMaterial);
+
+  // Set the display mode for the drawer to Shaded (AIS_Shaded)
+  // This ensures the object is rendered as a solid, not wireframe, when
+  // highlighted.
+  theDrawer->SetDisplayMode(AIS_Shaded);
+
+  // Apply the configured fillArea aspect to the drawer
+  theDrawer->SetBasicFillAreaAspect(fillArea);
+}
+
+void GlfwOcctView::setupDefaultAISDrawer() {
+  if (internal_->context.IsNull()) {
+    spdlog::error("GlfwOcctView::setupDefaultAISDrawer(): "
+                  "AIS_InteractiveContext is null.");
+    return;
+  }
+  spdlog::info(
+      "GlfwOcctView::setupDefaultAISDrawer(): Configuring default AIS drawer.");
+
+  // FIXME: these values should be configurable
+  static const Standard_Real sLineWidth = 2.0;
+  static const Quantity_Color sEdgeColor(0.0, 192.0 / 255.0, 255.0 / 255.0,
+                                         Quantity_TOC_RGB);
+  static const Quantity_Color sFillColor(Quantity_NOC_GRAY90);
+  static const Aspect_TypeOfLine sTypeOfLine(Aspect_TOL_SOLID);
+
+  Handle(Prs3d_Drawer) drawer = internal_->context->DefaultDrawer();
+
+  // Set default display mode
+  drawer->SetDisplayMode(AIS_Shaded); // Default to shaded display
+
+  // Configure edge display (Face Boundary)
+  drawer->SetFaceBoundaryDraw(Standard_True); // Show edges by default
+
+  // Configure default line aspect for edges
+  Handle(Prs3d_LineAspect) lineAspect = drawer->LineAspect();
+  if (lineAspect.IsNull()) {
+    lineAspect = new Prs3d_LineAspect(sEdgeColor, sTypeOfLine, sLineWidth);
+    drawer->SetLineAspect(lineAspect);
+  } else {
+    // Mayo classic theme cyan-like color for edges: QColor(0, 192, 255)
+    lineAspect->SetColor(sEdgeColor);
+    lineAspect->SetTypeOfLine(sTypeOfLine);
+    lineAspect->SetWidth(sLineWidth);
+  }
+
+  // Configure default shading aspect (fill color and material)
+  Handle(Graphic3d_AspectFillArea3d) fillAspect =
+      drawer->ShadingAspect()->Aspect();
+  if (fillAspect.IsNull()) {
+    // This case should ideally not happen if ShadingAspect() itself is not null
+    // and its Aspect() is just not set. If ShadingAspect() can be null,
+    // we'd need to new Prs3d_ShadingAspect and then its aspect.
+    // For simplicity, assuming ShadingAspect and its Aspect() can be
+    // configured.
+    Handle(Prs3d_ShadingAspect) sa = new Prs3d_ShadingAspect();
+    fillAspect = new Graphic3d_AspectFillArea3d();
+    sa->SetAspect(fillAspect);
+    drawer->SetShadingAspect(sa);
+  }
+  fillAspect->SetInteriorColor(sFillColor);
+  Graphic3d_MaterialAspect material(Graphic3d_NOM_PLASTIC);
+  material.SetColor(sFillColor);
+  fillAspect->SetFrontMaterial(material);
+  fillAspect->SetBackMaterial(material);
+
+  // Optional: Transparency, HLR settings etc. can also be set here
+  // drawer->SetTransparency(0.0);
+  // drawer->SetTypeOfHLR(Prs3d_TOH_PolyAlgo);
 }
