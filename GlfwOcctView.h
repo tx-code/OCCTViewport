@@ -25,14 +25,14 @@
 
 #include <AIS_InteractiveObject.hxx>
 #include <AIS_ViewController.hxx> // Base class
-#include <memory>                 // For std::unique_ptr
-#include <gp_Pnt.hxx>
 #include <Quantity_Color.hxx>     // For Quantity_Color
+#include <gp_Pnt.hxx>
+#include <memory> // For std::unique_ptr
 
 // Forward declarations
 struct GLFWwindow;
 class Prs3d_Drawer;
-class AIS_Shape; 
+class AIS_Shape;
 class AIS_InteractiveObject;
 
 // Using protected inheritance because:
@@ -51,8 +51,8 @@ public:
   void run();
 
 protected:
-  //! Create 3D Viewer.
-  void initViewer();
+  //! Initialize OCCT Rendering System.
+  void initOCCTRenderingSystem();
 
   //! Init ImGui.
   void initGui();
@@ -62,6 +62,15 @@ protected:
 
   //! Fill 3D Viewer with a DEMO items.
   void initDemoScene();
+
+  //! Initialize OCCT 3D Viewer.
+  void initV3dViewer();
+
+  //! Initialize OCCT AIS Context.
+  void initAisContext();
+
+  //! Initialize OCCT Visual Settings.
+  void initVisualSettings();
 
   //! Initialize off-screen rendering.
   void initOffscreenRendering();
@@ -124,7 +133,8 @@ private:
   gp_Pnt screenToViewCoordinates(int theX, int theY) const;
 
   //! Configure the highlight style for the given drawer
-  void configureHighlightStyle(const Handle(Prs3d_Drawer)& theDrawer, Quantity_Color fillAreaColor);
+  void configureHighlightStyle(const Handle(Prs3d_Drawer) & theDrawer,
+                               Quantity_Color fillAreaColor);
 
   //! Setup the default AIS drawer for nice shape display (shaded with edges)
   void setupDefaultAISDrawer();

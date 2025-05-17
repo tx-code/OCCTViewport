@@ -77,6 +77,8 @@ struct GlfwOcctView::ViewInternal {
   GLFWwindow *glfwWindow{nullptr};
   //! OCCT's wrapper for the window
   Handle(Aspect_Window) occtAspectWindow;
+  //! OCCT 3D Viewer
+  Handle(V3d_Viewer) viewer;
   //! OCCT 3D View
   Handle(V3d_View) view;
   //! 3D position in the view (converted from screen coordinates)
@@ -144,6 +146,22 @@ static Aspect_VKeyFlags keyFlagsFromGlfw(int theFlags) {
     aFlags |= Aspect_VKeyFlags_META;
   }
   return aFlags;
+}
+
+//! Create an opengl driver
+Handle(OpenGl_GraphicDriver)
+    createOpenGlDriver(const Handle(Aspect_DisplayConnection) &
+                           displayConnection,
+                       bool glDebug = false) {
+  Handle(OpenGl_GraphicDriver) aGraphicDriver =
+      new OpenGl_GraphicDriver(displayConnection, Standard_False);
+  aGraphicDriver->ChangeOptions().buffersNoSwap = Standard_True;
+  // contextCompatible is needed to support line thickness
+  aGraphicDriver->ChangeOptions().contextCompatible = !glDebug;
+  aGraphicDriver->ChangeOptions().ffpEnable = false;
+  aGraphicDriver->ChangeOptions().contextDebug = glDebug;
+  aGraphicDriver->ChangeOptions().contextSyncDebug = glDebug;
+  return aGraphicDriver;
 }
 } // namespace
 
@@ -235,7 +253,7 @@ void GlfwOcctView::run() {
     return;
   }
 
-  initViewer();
+  initOCCTRenderingSystem();
   initDemoScene();
   if (internal_->view.IsNull()) {
     return;
@@ -246,94 +264,16 @@ void GlfwOcctView::run() {
   cleanup();
 }
 
-void GlfwOcctView::initViewer() {
+void GlfwOcctView::initOCCTRenderingSystem() {
   if (!internal_->glfwWindow || internal_->occtAspectWindow.IsNull()) {
+    spdlog::error("No GLFW window or OCCT Aspect_Window found.");
     return;
   }
 
-  Handle(Aspect_DisplayConnection) aDispConn;
-#if !defined(_WIN32) && !defined(__APPLE__) // For X11
-  aDispConn = internal_->occtAspectWindow->GetDisplay();
-#else
-  aDispConn = new Aspect_DisplayConnection();
-#endif
-
-  Handle(OpenGl_GraphicDriver) aGraphicDriver =
-      new OpenGl_GraphicDriver(aDispConn, Standard_False);
-  aGraphicDriver->SetBuffersNoSwap(Standard_True);
-
-  Handle(V3d_Viewer) aViewer = new V3d_Viewer(aGraphicDriver);
-  aViewer->SetDefaultLights();
-  aViewer->SetLightOn();
-  aViewer->SetDefaultTypeOfView(V3d_ORTHOGRAPHIC);
-  aViewer->ActivateGrid(Aspect_GT_Rectangular, Aspect_GDM_Lines);
-  internal_->view = aViewer->CreateView();
-  internal_->view->SetImmediateUpdate(Standard_False);
-
-  Aspect_RenderingContext aNativeGlContext = NULL;
-#if defined(_WIN32)
-  aNativeGlContext = glfwGetWGLContext(internal_->glfwWindow);
-#elif defined(__APPLE__)
-  aNativeGlContext =
-      (Aspect_RenderingContext)glfwGetNSGLContext(internal_->glfwWindow);
-#else // Linux/X11
-  aNativeGlContext = glfwGetGLXContext(internal_->glfwWindow);
-#endif
-  internal_->view->SetWindow(internal_->occtAspectWindow, aNativeGlContext);
-
-  internal_->view->ChangeRenderingParams().ToShowStats = Standard_True;
-  internal_->view->ChangeRenderingParams().CollectedStats =
-      Graphic3d_RenderingParams::PerfCounters_All;
-
-  internal_->glContext = aGraphicDriver->GetSharedContext();
-  if (internal_->glContext.IsNull()) {
-    spdlog::error("GlfwOcctView: Failed to get OpenGl_Context.");
-  }
-
+  initV3dViewer();
   initOffscreenRendering();
-
-  internal_->context = new AIS_InteractiveContext(aViewer);
-
-  internal_->viewCube = new AIS_ViewCube();
-  internal_->viewCube->SetSize(55);
-  internal_->viewCube->SetFontHeight(12);
-  internal_->viewCube->SetAxesLabels("", "", "");
-  internal_->viewCube->SetTransformPersistence(new Graphic3d_TransformPers(
-      Graphic3d_TMF_TriedronPers, Aspect_TOTP_LEFT_LOWER,
-      Graphic3d_Vec2i(100, 100)));
-  if (this->ViewAnimation()) {
-    internal_->viewCube->SetViewAnimation(this->ViewAnimation());
-  } else {
-    spdlog::warn("GlfwOcctView: ViewAnimation not available for ViewCube.");
-  }
-
-  if (internal_->fixedViewCubeAnimationLoop) {
-    internal_->viewCube->SetDuration(0.1);
-    internal_->viewCube->SetFixedAnimationLoop(true);
-  } else {
-    internal_->viewCube->SetDuration(0.5);
-    internal_->viewCube->SetFixedAnimationLoop(false);
-  }
-  internal_->context->Display(internal_->viewCube, false);
-
-  /// Additional initialization
-  if (internal_->configureDefaultDrawer) {
-    setupDefaultAISDrawer();
-  }
-
-  if (internal_->configureCustomHighlightStyle) {
-    spdlog::info(
-        "GlfwOcctView::initViewer(): Configuring custom highlight style.");
-    // light blue
-    Quantity_Color highlightColor(128.0 / 255.0, 200.0 / 255.0, 255.0 / 255.0,
-                                  Quantity_TOC_RGB);
-    configureHighlightStyle(
-        internal_->context->HighlightStyle(Prs3d_TypeOfHighlight_LocalSelected),
-        highlightColor);
-    configureHighlightStyle(
-        internal_->context->HighlightStyle(Prs3d_TypeOfHighlight_Selected),
-        highlightColor);
-  }
+  initAisContext();
+  initVisualSettings();
 }
 
 void GlfwOcctView::initOffscreenRendering() {
@@ -504,8 +444,8 @@ void GlfwOcctView::renderGui() {
       }
     }
     // Activate the view cube to allow it to be normally selected
-    // FIXME: if we activate the selection mode for each object except the view cube, we don't need 
-    // to activate the view cube here
+    // FIXME: if we activate the selection mode for each object except the view
+    // cube, we don't need to activate the view cube here
     internal_->context->Activate(internal_->viewCube);
   }
   ImGui::End();
@@ -610,10 +550,106 @@ void GlfwOcctView::initDemoScene() {
   spdlog::info("OpenGL info: \n{}", aGlInfo.ToCString());
 }
 
+void GlfwOcctView::initV3dViewer() {
+  spdlog::info("Initializing OCCT 3D Viewer.");
+
+  assert(internal_->occtAspectWindow.IsNull() == false);
+
+  Handle(Aspect_DisplayConnection) aDispConn;
+#if !defined(_WIN32) && !defined(__APPLE__) // For X11
+  aDispConn = internal_->occtAspectWindow->GetDisplay();
+#else
+  aDispConn = new Aspect_DisplayConnection();
+#endif
+  Handle(OpenGl_GraphicDriver) aGraphicDriver = createOpenGlDriver(aDispConn);
+
+  internal_->viewer = new V3d_Viewer(aGraphicDriver);
+  internal_->viewer->SetDefaultLights();
+  internal_->viewer->SetLightOn();
+  internal_->viewer->SetDefaultTypeOfView(V3d_ORTHOGRAPHIC);
+  internal_->viewer->ActivateGrid(Aspect_GT_Rectangular, Aspect_GDM_Lines);
+  internal_->view = internal_->viewer->CreateView();
+  internal_->view->SetImmediateUpdate(Standard_False);
+
+  Aspect_RenderingContext aNativeGlContext = NULL;
+#if defined(_WIN32)
+  aNativeGlContext = glfwGetWGLContext(internal_->glfwWindow);
+#elif defined(__APPLE__)
+  aNativeGlContext =
+      (Aspect_RenderingContext)glfwGetNSGLContext(internal_->glfwWindow);
+#else // Linux/X11
+  aNativeGlContext = glfwGetGLXContext(internal_->glfwWindow);
+#endif
+  internal_->view->SetWindow(internal_->occtAspectWindow, aNativeGlContext);
+
+  internal_->view->ChangeRenderingParams().ToShowStats = Standard_True;
+  internal_->view->ChangeRenderingParams().CollectedStats =
+      Graphic3d_RenderingParams::PerfCounters_All;
+
+  internal_->glContext = aGraphicDriver->GetSharedContext();
+  if (internal_->glContext.IsNull()) {
+    spdlog::error("GlfwOcctView: Failed to get OpenGl_Context.");
+    assert(false);
+  }
+}
+
+void GlfwOcctView::initAisContext() {
+  spdlog::info("Initializing OCCT AIS Context.");
+
+  assert(internal_->viewer.IsNull() == false);
+  internal_->context = new AIS_InteractiveContext(internal_->viewer);
+
+  internal_->viewCube = new AIS_ViewCube();
+  internal_->viewCube->SetSize(55);
+  internal_->viewCube->SetFontHeight(12);
+  internal_->viewCube->SetAxesLabels("", "", "");
+  internal_->viewCube->SetTransformPersistence(new Graphic3d_TransformPers(
+      Graphic3d_TMF_TriedronPers, Aspect_TOTP_LEFT_LOWER,
+      Graphic3d_Vec2i(100, 100)));
+  if (this->ViewAnimation()) {
+    internal_->viewCube->SetViewAnimation(this->ViewAnimation());
+  } else {
+    spdlog::warn("GlfwOcctView: ViewAnimation not available for ViewCube.");
+  }
+
+  if (internal_->fixedViewCubeAnimationLoop) {
+    internal_->viewCube->SetDuration(0.1);
+    internal_->viewCube->SetFixedAnimationLoop(true);
+  } else {
+    internal_->viewCube->SetDuration(0.5);
+    internal_->viewCube->SetFixedAnimationLoop(false);
+  }
+  internal_->context->Display(internal_->viewCube, false);
+}
+
+void GlfwOcctView::initVisualSettings() {
+  spdlog::info("Initializing OCCT Visual Settings.");
+
+  assert(internal_->context.IsNull() == false);
+  /// Additional initialization
+  if (internal_->configureDefaultDrawer) {
+    setupDefaultAISDrawer();
+  }
+
+  if (internal_->configureCustomHighlightStyle) {
+    spdlog::info(
+        "GlfwOcctView::initViewer(): Configuring custom highlight style.");
+    // light blue
+    Quantity_Color highlightColor(128.0 / 255.0, 200.0 / 255.0, 255.0 / 255.0,
+                                  Quantity_TOC_RGB);
+    configureHighlightStyle(
+        internal_->context->HighlightStyle(Prs3d_TypeOfHighlight_LocalSelected),
+        highlightColor);
+    configureHighlightStyle(
+        internal_->context->HighlightStyle(Prs3d_TypeOfHighlight_Selected),
+        highlightColor);
+  }
+}
+
 void GlfwOcctView::mainloop() {
   if (!internal_->glfwWindow)
     return;
-  
+
   while (!glfwWindowShouldClose(internal_->glfwWindow)) {
     if (!toAskNextFrame()) { // toAskNextFrame is from AIS_ViewController
       glfwWaitEvents();
@@ -815,13 +851,13 @@ void GlfwOcctView::setupDefaultAISDrawer() {
   Handle(Prs3d_LineAspect) lineAspect = drawer->LineAspect();
   if (lineAspect.IsNull()) {
     lineAspect = new Prs3d_LineAspect(sEdgeColor, sTypeOfLine, sLineWidth);
-    drawer->SetLineAspect(lineAspect);
   } else {
     // Mayo classic theme cyan-like color for edges: QColor(0, 192, 255)
     lineAspect->SetColor(sEdgeColor);
     lineAspect->SetTypeOfLine(sTypeOfLine);
     lineAspect->SetWidth(sLineWidth);
   }
+  drawer->SetLineAspect(lineAspect);
 
   // Configure default shading aspect (fill color and material)
   Handle(Graphic3d_AspectFillArea3d) fillAspect =
