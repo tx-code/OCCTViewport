@@ -23,31 +23,43 @@
 #include "GlfwOcctView.h"
 
 // ImGui
-#include <AIS_DisplayMode.hxx>
-#include <Prs3d_TypeOfHighlight.hxx>
-#include <TopAbs_ShapeEnum.hxx>
 #include <imgui.h>
 #include <imgui_impl_glfw.h>
 #include <imgui_impl_opengl3.h>
 
 // OCCT
 #include <AIS_AnimationCamera.hxx>
+#include <AIS_DisplayMode.hxx>
 #include <AIS_InteractiveContext.hxx>
 #include <AIS_Shape.hxx>
+#include <AIS_Triangulation.hxx>
 #include <AIS_ViewCube.hxx>
 #include <Aspect_DisplayConnection.hxx>
 #include <Aspect_Handle.hxx>
 #include <BRepPrimAPI_MakeBox.hxx>
 #include <BRepPrimAPI_MakeCone.hxx>
 #include <ElSLib.hxx>
+#include <GeomAbs_Shape.hxx>
 #include <Graphic3d_AspectFillArea3d.hxx>
 #include <Graphic3d_MaterialAspect.hxx>
 #include <OpenGl_Context.hxx>
 #include <OpenGl_FrameBuffer.hxx>
 #include <OpenGl_GraphicDriver.hxx>
 #include <OpenGl_Texture.hxx>
+#include <Poly_Triangulation.hxx>
 #include <ProjLib.hxx>
 #include <Prs3d_LineAspect.hxx>
+#include <Prs3d_PointAspect.hxx>
+#include <Prs3d_ShadingAspect.hxx>
+#include <Prs3d_TypeOfHLR.hxx>
+#include <Prs3d_TypeOfHighlight.hxx>
+#include <Quantity_Color.hxx>
+#include <Quantity_NameOfColor.hxx>
+#include <SelectMgr_PickingStrategy.hxx>
+#include <TopAbs_ShapeEnum.hxx>
+#include <V3d_AmbientLight.hxx>
+#include <V3d_DirectionalLight.hxx>
+#include <V3d_Light.hxx>
 #include <V3d_TypeOfView.hxx>
 #include <V3d_View.hxx>
 
@@ -109,10 +121,21 @@ struct GlfwOcctView::ViewInternal {
   bool renderWindowHasFocus{false};
 
   /// Visual properties
-  //! Flag to indicate if custom highlight style is configured
-  bool configureCustomHighlightStyle{true};
-  //! Flag to indicate if default drawer is configured
-  bool configureDefaultDrawer{true};
+  //! Face color
+  Quantity_Color faceColor{Quantity_NOC_GRAY90};
+  //! Edge color
+  Quantity_Color edgeColor{Quantity_NOC_BLACK};
+  //! Edge width
+  double boundaryEdgeWidth{2.0};
+  //! Vertex color
+  Quantity_Color vertexColor{Quantity_NOC_BLACK};
+  //! Vertex size
+  double vertexSize{2.0};
+
+  //! Selection color
+  Quantity_Color selectionColor{Quantity_NOC_RED};
+  //! Highlight color
+  Quantity_Color highlightColor{Quantity_NOC_YELLOW};
 };
 
 namespace { // Anonymous namespace for static helper functions from original
@@ -264,6 +287,22 @@ void GlfwOcctView::run() {
   cleanup();
 }
 
+void GlfwOcctView::addAisObject(const Handle(AIS_InteractiveObject) &
+                                theAisObject) {
+  if (theAisObject.IsNull()) {
+    spdlog::error("GlfwOcctView::addAisObject(): AIS object is null.");
+    return;
+  }
+
+  if (internal_->context.IsNull()) {
+    spdlog::error("GlfwOcctView::addAisObject(): Context is not initialized.");
+    return;
+  }
+
+  theAisObject->SetAttributes(getDefaultAISDrawer());
+  internal_->context->Display(theAisObject, AIS_Shaded, 0, false);
+}
+
 void GlfwOcctView::initOCCTRenderingSystem() {
   if (!internal_->glfwWindow || internal_->occtAspectWindow.IsNull()) {
     spdlog::error("No GLFW window or OCCT Aspect_Window found.");
@@ -271,8 +310,8 @@ void GlfwOcctView::initOCCTRenderingSystem() {
   }
 
   initV3dViewer();
-  initOffscreenRendering();
   initAisContext();
+  initOffscreenRendering();
   initVisualSettings();
 }
 
@@ -526,12 +565,12 @@ void GlfwOcctView::initDemoScene() {
   anAxis.SetLocation(gp_Pnt(0.0, 0.0, 0.0));
   Handle(AIS_Shape) aBox =
       new AIS_Shape(BRepPrimAPI_MakeBox(anAxis, 50, 50, 50).Shape());
-  internal_->context->Display(aBox, AIS_Shaded, 0, false);
+  addAisObject(aBox);
 
   anAxis.SetLocation(gp_Pnt(25.0, 125.0, 0.0));
   Handle(AIS_Shape) aCone =
       new AIS_Shape(BRepPrimAPI_MakeCone(anAxis, 25, 0, 50).Shape());
-  internal_->context->Display(aCone, AIS_Shaded, 0, false);
+  addAisObject(aCone);
 
   TCollection_AsciiString aGlInfo;
   {
@@ -563,13 +602,17 @@ void GlfwOcctView::initV3dViewer() {
 #endif
   Handle(OpenGl_GraphicDriver) aGraphicDriver = createOpenGlDriver(aDispConn);
 
-  internal_->viewer = new V3d_Viewer(aGraphicDriver);
-  internal_->viewer->SetDefaultLights();
-  internal_->viewer->SetLightOn();
-  internal_->viewer->SetDefaultTypeOfView(V3d_ORTHOGRAPHIC);
-  internal_->viewer->ActivateGrid(Aspect_GT_Rectangular, Aspect_GDM_Lines);
-  internal_->view = internal_->viewer->CreateView();
-  internal_->view->SetImmediateUpdate(Standard_False);
+  auto &viewer_ = internal_->viewer; // shortcut
+  auto &view_ = internal_->view;     // shortcut
+
+  viewer_ = new V3d_Viewer(aGraphicDriver);
+  viewer_->SetLightOn(
+      new V3d_DirectionalLight(V3d_Zneg, Quantity_NOC_WHITE, true));
+  viewer_->SetLightOn(new V3d_AmbientLight(Quantity_NOC_WHITE));
+  viewer_->SetDefaultTypeOfView(V3d_ORTHOGRAPHIC);
+  viewer_->ActivateGrid(Aspect_GT_Rectangular, Aspect_GDM_Lines);
+  view_ = viewer_->CreateView();
+  view_->SetImmediateUpdate(Standard_False);
 
   Aspect_RenderingContext aNativeGlContext = NULL;
 #if defined(_WIN32)
@@ -580,7 +623,7 @@ void GlfwOcctView::initV3dViewer() {
 #else // Linux/X11
   aNativeGlContext = glfwGetGLXContext(internal_->glfwWindow);
 #endif
-  internal_->view->SetWindow(internal_->occtAspectWindow, aNativeGlContext);
+  view_->SetWindow(internal_->occtAspectWindow, aNativeGlContext);
 
   internal_->view->ChangeRenderingParams().ToShowStats = Standard_True;
   internal_->view->ChangeRenderingParams().CollectedStats =
@@ -597,53 +640,109 @@ void GlfwOcctView::initAisContext() {
   spdlog::info("Initializing OCCT AIS Context.");
 
   assert(internal_->viewer.IsNull() == false);
-  internal_->context = new AIS_InteractiveContext(internal_->viewer);
+  auto &context_ = internal_->context; // shortcut
 
-  internal_->viewCube = new AIS_ViewCube();
-  internal_->viewCube->SetSize(55);
-  internal_->viewCube->SetFontHeight(12);
-  internal_->viewCube->SetAxesLabels("", "", "");
-  internal_->viewCube->SetTransformPersistence(new Graphic3d_TransformPers(
-      Graphic3d_TMF_TriedronPers, Aspect_TOTP_LEFT_LOWER,
-      Graphic3d_Vec2i(100, 100)));
-  if (this->ViewAnimation()) {
-    internal_->viewCube->SetViewAnimation(this->ViewAnimation());
-  } else {
-    spdlog::warn("GlfwOcctView: ViewAnimation not available for ViewCube.");
-  }
+  context_ = new AIS_InteractiveContext(internal_->viewer);
+  context_->SetAutoActivateSelection(true);
+  context_->SetToHilightSelected(false);
+  context_->SetPickingStrategy(SelectMgr_PickingStrategy_OnlyTopmost);
+  context_->SetDisplayMode(AIS_Shaded, false);
+  context_->EnableDrawHiddenLine();
+  context_->SetPixelTolerance(2.0);
 
-  if (internal_->fixedViewCubeAnimationLoop) {
-    internal_->viewCube->SetDuration(0.1);
-    internal_->viewCube->SetFixedAnimationLoop(true);
-  } else {
-    internal_->viewCube->SetDuration(0.5);
-    internal_->viewCube->SetFixedAnimationLoop(false);
+  auto &default_drawer = context_->DefaultDrawer();
+  default_drawer->SetWireAspect(
+      new Prs3d_LineAspect(Quantity_NOC_BLACK, Aspect_TOL_SOLID, 1.0));
+  default_drawer->SetTypeOfHLR(Prs3d_TOH_PolyAlgo);
+
+  constexpr bool s_display_viewcube = true;
+
+  if constexpr (s_display_viewcube) {
+    internal_->viewCube = new AIS_ViewCube();
+    internal_->viewCube->SetSize(55);
+    internal_->viewCube->SetFontHeight(12);
+    internal_->viewCube->SetAxesLabels("", "", "");
+    internal_->viewCube->SetTransformPersistence(new Graphic3d_TransformPers(
+        Graphic3d_TMF_TriedronPers, Aspect_TOTP_LEFT_LOWER,
+        Graphic3d_Vec2i(100, 100)));
+    if (this->ViewAnimation()) {
+      internal_->viewCube->SetViewAnimation(this->ViewAnimation());
+    } else {
+      spdlog::warn("GlfwOcctView: ViewAnimation not available for ViewCube.");
+    }
+
+    if (internal_->fixedViewCubeAnimationLoop) {
+      internal_->viewCube->SetDuration(0.1);
+      internal_->viewCube->SetFixedAnimationLoop(true);
+    } else {
+      internal_->viewCube->SetDuration(0.5);
+      internal_->viewCube->SetFixedAnimationLoop(false);
+    }
+    internal_->context->Display(internal_->viewCube, false);
   }
-  internal_->context->Display(internal_->viewCube, false);
 }
 
 void GlfwOcctView::initVisualSettings() {
   spdlog::info("Initializing OCCT Visual Settings.");
 
   assert(internal_->context.IsNull() == false);
-  /// Additional initialization
-  if (internal_->configureDefaultDrawer) {
-    setupDefaultAISDrawer();
-  }
+  auto &context_ = internal_->context; // shortcut
 
-  if (internal_->configureCustomHighlightStyle) {
-    spdlog::info(
-        "GlfwOcctView::initViewer(): Configuring custom highlight style.");
-    // light blue
-    Quantity_Color highlightColor(128.0 / 255.0, 200.0 / 255.0, 255.0 / 255.0,
-                                  Quantity_TOC_RGB);
-    configureHighlightStyle(
-        internal_->context->HighlightStyle(Prs3d_TypeOfHighlight_LocalSelected),
-        highlightColor);
-    configureHighlightStyle(
-        internal_->context->HighlightStyle(Prs3d_TypeOfHighlight_Selected),
-        highlightColor);
-  }
+  // Higlight Selected
+  Handle(Prs3d_Drawer) selectionDrawer = new Prs3d_Drawer();
+  selectionDrawer->SetupOwnDefaults();
+  selectionDrawer->SetColor(internal_->selectionColor);
+  selectionDrawer->SetDisplayMode(0);
+  selectionDrawer->SetZLayer(Graphic3d_ZLayerId_Default);
+  selectionDrawer->SetTypeOfDeflection(Aspect_TOD_RELATIVE);
+  selectionDrawer->SetDeviationAngle(context_->DeviationAngle());
+  selectionDrawer->SetDeviationCoefficient(context_->DeviationCoefficient());
+  context_->SetSelectionStyle(selectionDrawer); // equal to
+                                                // SetHighlightStyle(Prs3d_TypeOfHighlight_Selected,
+                                                // selectionDrawer);
+  context_->SetHighlightStyle(Prs3d_TypeOfHighlight_LocalSelected,
+                              selectionDrawer);
+  context_->SetHighlightStyle(Prs3d_TypeOfHighlight_SubIntensity,
+                              selectionDrawer);
+
+  // Higlight Dynamic
+  Handle(Prs3d_Drawer) hilightDrawer = new Prs3d_Drawer();
+  hilightDrawer->SetupOwnDefaults();
+  hilightDrawer->SetColor(internal_->highlightColor);
+  hilightDrawer->SetDisplayMode(0);
+  hilightDrawer->SetZLayer(Graphic3d_ZLayerId_Top);
+  hilightDrawer->SetTypeOfDeflection(Aspect_TOD_RELATIVE);
+  hilightDrawer->SetDeviationAngle(context_->DeviationAngle());
+  hilightDrawer->SetDeviationCoefficient(context_->DeviationCoefficient());
+  context_->SetHighlightStyle(Prs3d_TypeOfHighlight_Dynamic, hilightDrawer);
+
+  // Higlight Local
+  Handle(Prs3d_Drawer) hilightLocalDrawer = new Prs3d_Drawer();
+  hilightLocalDrawer->SetupOwnDefaults();
+  hilightLocalDrawer->SetColor(internal_->highlightColor);
+  hilightLocalDrawer->SetDisplayMode(1);
+  hilightLocalDrawer->SetZLayer(Graphic3d_ZLayerId_Top);
+  hilightLocalDrawer->SetTypeOfDeflection(Aspect_TOD_RELATIVE);
+  hilightLocalDrawer->SetDeviationAngle(context_->DeviationAngle());
+  hilightLocalDrawer->SetDeviationCoefficient(context_->DeviationCoefficient());
+
+  Handle(Prs3d_ShadingAspect) shadingAspect = new Prs3d_ShadingAspect();
+  shadingAspect->SetColor(internal_->highlightColor);
+  shadingAspect->SetTransparency(0);
+  shadingAspect->Aspect()->SetPolygonOffsets((int)Aspect_POM_Fill, 0.99f, 0.0f);
+  hilightLocalDrawer->SetShadingAspect(shadingAspect);
+
+  Handle(Prs3d_LineAspect) lineAspect =
+      new Prs3d_LineAspect(internal_->highlightColor, Aspect_TOL_SOLID, 3.0);
+  hilightLocalDrawer->SetLineAspect(lineAspect);
+  hilightLocalDrawer->SetSeenLineAspect(lineAspect);
+  hilightLocalDrawer->SetWireAspect(lineAspect);
+  hilightLocalDrawer->SetFaceBoundaryAspect(lineAspect);
+  hilightLocalDrawer->SetFreeBoundaryAspect(lineAspect);
+  hilightLocalDrawer->SetUnFreeBoundaryAspect(lineAspect);
+
+  context_->SetHighlightStyle(Prs3d_TypeOfHighlight_LocalDynamic,
+                              hilightLocalDrawer);
 }
 
 void GlfwOcctView::mainloop() {
@@ -785,101 +884,43 @@ gp_Pnt GlfwOcctView::screenToViewCoordinates(int theX, int theY) const {
                        planeView);
 }
 
-// copy from mayo: MainWindow.cpp
 void GlfwOcctView::configureHighlightStyle(const Handle(Prs3d_Drawer) &
-                                               theDrawer,
-                                           Quantity_Color fillAreaColor) {
-  // Create a new AspectFillArea3d for the highlight style
-  auto fillArea = new Graphic3d_AspectFillArea3d;
+                                           theDrawer) {
+  Handle(Prs3d_ShadingAspect) shadingAspect = new Prs3d_ShadingAspect();
+  shadingAspect->SetColor(internal_->highlightColor);
+  shadingAspect->SetMaterial(Graphic3d_NOM_PLASTIC);
+  shadingAspect->SetTransparency(0);
+  shadingAspect->Aspect()->SetPolygonOffsets((int)Aspect_POM_Fill, 0.99f, 0.0f);
 
-  // Try to copy properties from the default shading aspect
-  // This means the highlighted object will retain some of its original
-  // appearance (like material) but its color will be overridden by the
-  // highlight color.
-  auto defaultShadingAspect =
-      internal_->context->DefaultDrawer()->ShadingAspect();
-  if (defaultShadingAspect && defaultShadingAspect->Aspect())
-    *fillArea =
-        *defaultShadingAspect->Aspect(); // Copy existing aspect settings
-
-  // Set the interior color of the fill area
-  fillArea->SetInteriorColor(fillAreaColor);
-
-  // Define a material for the fill area (e.g., PLASTER)
-  Graphic3d_MaterialAspect fillMaterial(Graphic3d_NOM_PLASTER);
-  fillMaterial.SetColor(fillAreaColor); // Set material color
-  // fillMaterial.SetTransparency(0.1f); // Optional: can set transparency
-
-  // Apply the material to both front and back faces
-  fillArea->SetFrontMaterial(fillMaterial);
-  fillArea->SetBackMaterial(fillMaterial);
-
-  // Set the display mode for the drawer to Shaded (AIS_Shaded)
-  // This ensures the object is rendered as a solid, not wireframe, when
-  // highlighted.
+  theDrawer->SetShadingAspect(shadingAspect);
   theDrawer->SetDisplayMode(AIS_Shaded);
-
-  // Apply the configured fillArea aspect to the drawer
-  theDrawer->SetBasicFillAreaAspect(fillArea);
 }
 
-void GlfwOcctView::setupDefaultAISDrawer() {
-  if (internal_->context.IsNull()) {
-    spdlog::error("GlfwOcctView::setupDefaultAISDrawer(): "
-                  "AIS_InteractiveContext is null.");
-    return;
-  }
-  spdlog::info(
-      "GlfwOcctView::setupDefaultAISDrawer(): Configuring default AIS drawer.");
+Handle(Prs3d_Drawer) GlfwOcctView::getDefaultAISDrawer() {
+  // Normal mode drawer
+  Handle(Prs3d_ShadingAspect) shadingAspect = new Prs3d_ShadingAspect();
+  shadingAspect->SetColor(internal_->faceColor);
+  shadingAspect->SetMaterial(Graphic3d_NOM_PLASTIC);
+  shadingAspect->SetTransparency(0);
+  shadingAspect->Aspect()->SetPolygonOffsets((int)Aspect_POM_Fill, 0.99f, 0.0f);
 
-  // FIXME: these values should be configurable
-  static const Standard_Real sLineWidth = 2.0;
-  static const Quantity_Color sEdgeColor(0.0, 192.0 / 255.0, 255.0 / 255.0,
-                                         Quantity_TOC_RGB);
-  static const Quantity_Color sFillColor(Quantity_NOC_GRAY90);
-  static const Aspect_TypeOfLine sTypeOfLine(Aspect_TOL_SOLID);
+  Handle(Prs3d_LineAspect) lineAspect = new Prs3d_LineAspect(
+      internal_->edgeColor, Aspect_TOL_SOLID, internal_->boundaryEdgeWidth);
 
-  Handle(Prs3d_Drawer) drawer = internal_->context->DefaultDrawer();
-
-  // Set default display mode
-  drawer->SetDisplayMode(AIS_Shaded); // Default to shaded display
-
-  // Configure edge display (Face Boundary)
-  drawer->SetFaceBoundaryDraw(Standard_True); // Show edges by default
-
-  // Configure default line aspect for edges
-  Handle(Prs3d_LineAspect) lineAspect = drawer->LineAspect();
-  if (lineAspect.IsNull()) {
-    lineAspect = new Prs3d_LineAspect(sEdgeColor, sTypeOfLine, sLineWidth);
-  } else {
-    // Mayo classic theme cyan-like color for edges: QColor(0, 192, 255)
-    lineAspect->SetColor(sEdgeColor);
-    lineAspect->SetTypeOfLine(sTypeOfLine);
-    lineAspect->SetWidth(sLineWidth);
-  }
+  Handle(Prs3d_Drawer) drawer = new Prs3d_Drawer();
+  drawer->SetShadingAspect(shadingAspect);
   drawer->SetLineAspect(lineAspect);
+  drawer->SetSeenLineAspect(lineAspect);
+  drawer->SetWireAspect(lineAspect);
+  drawer->SetFaceBoundaryAspect(lineAspect);
+  drawer->SetFreeBoundaryAspect(lineAspect);
+  drawer->SetUnFreeBoundaryAspect(lineAspect);
+  drawer->SetFaceBoundaryUpperContinuity(GeomAbs_C2);
+  drawer->SetPointAspect(new Prs3d_PointAspect(
+      Aspect_TOM_O_POINT, internal_->vertexColor, internal_->vertexSize));
 
-  // Configure default shading aspect (fill color and material)
-  Handle(Graphic3d_AspectFillArea3d) fillAspect =
-      drawer->ShadingAspect()->Aspect();
-  if (fillAspect.IsNull()) {
-    // This case should ideally not happen if ShadingAspect() itself is not null
-    // and its Aspect() is just not set. If ShadingAspect() can be null,
-    // we'd need to new Prs3d_ShadingAspect and then its aspect.
-    // For simplicity, assuming ShadingAspect and its Aspect() can be
-    // configured.
-    Handle(Prs3d_ShadingAspect) sa = new Prs3d_ShadingAspect();
-    fillAspect = new Graphic3d_AspectFillArea3d();
-    sa->SetAspect(fillAspect);
-    drawer->SetShadingAspect(sa);
-  }
-  fillAspect->SetInteriorColor(sFillColor);
-  Graphic3d_MaterialAspect material(Graphic3d_NOM_PLASTIC);
-  material.SetColor(sFillColor);
-  fillAspect->SetFrontMaterial(material);
-  fillAspect->SetBackMaterial(material);
-
-  // Optional: Transparency, HLR settings etc. can also be set here
-  // drawer->SetTransparency(0.0);
-  // drawer->SetTypeOfHLR(Prs3d_TOH_PolyAlgo);
+  drawer->SetFaceBoundaryDraw(true);
+  drawer->SetDisplayMode(AIS_Shaded);
+  drawer->SetTypeOfDeflection(Aspect_TOD_RELATIVE);
+  return drawer;
 }

@@ -50,6 +50,9 @@ public:
   //! Main application entry point.
   void run();
 
+  //! Add an ais object to the ais context.
+  void addAisObject(const Handle(AIS_InteractiveObject) & theAisObject);
+
 protected:
   //! Initialize OCCT Rendering System.
   void initOCCTRenderingSystem();
@@ -133,11 +136,10 @@ private:
   gp_Pnt screenToViewCoordinates(int theX, int theY) const;
 
   //! Configure the highlight style for the given drawer
-  void configureHighlightStyle(const Handle(Prs3d_Drawer) & theDrawer,
-                               Quantity_Color fillAreaColor);
+  void configureHighlightStyle(const Handle(Prs3d_Drawer) & theDrawer);
 
-  //! Setup the default AIS drawer for nice shape display (shaded with edges)
-  void setupDefaultAISDrawer();
+  //! Get the default AIS drawer for nice shape display (shaded with edges)
+  Handle(Prs3d_Drawer) getDefaultAISDrawer();
 
 private:
   struct ViewInternal;
