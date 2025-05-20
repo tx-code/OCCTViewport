@@ -79,7 +79,7 @@ protected:
   void initOffscreenRendering();
 
   //! Resize off-screen framebuffer if needed.
-  void resizeOffscreenFramebuffer(int theWidth, int theHeight);
+  bool resizeOffscreenFramebuffer(int theWidth, int theHeight);
 
   //! Application event loop.
   void mainloop();

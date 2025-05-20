@@ -337,10 +337,8 @@ void GlfwOcctView::initOffscreenRendering() {
   }
 }
 
-void GlfwOcctView::resizeOffscreenFramebuffer(int theWidth, int theHeight) {
-  if (internal_->glContext.IsNull() || internal_->offscreenFBO.IsNull()) {
-    return;
-  }
+bool GlfwOcctView::resizeOffscreenFramebuffer(int theWidth, int theHeight) {
+  assert(internal_->offscreenFBO && internal_->glContext);
 
   if (internal_->needToResizeFBO ||
       internal_->offscreenFBO->GetSizeX() != theWidth ||
@@ -349,7 +347,9 @@ void GlfwOcctView::resizeOffscreenFramebuffer(int theWidth, int theHeight) {
                                       Graphic3d_Vec2i(theWidth, theHeight),
                                       GL_RGB8, GL_DEPTH24_STENCIL8);
     internal_->needToResizeFBO = false;
+    return true;
   }
+  return false;
 }
 
 void GlfwOcctView::initGui() {
@@ -496,42 +496,60 @@ void GlfwOcctView::renderGui() {
                        ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar |
                        ImGuiWindowFlags_NoScrollWithMouse |
                        ImGuiWindowFlags_NoBringToFrontOnFocus)) {
-    ImVec2 aWindowSize = ImGui::GetContentRegionAvail();
+    ImVec2 newViewportSize = ImGui::GetContentRegionAvail();
+    int newRenderWidth = static_cast<int>(newViewportSize.x);
+    int newRenderHeight = static_cast<int>(newViewportSize.y);
 
-    if (internal_->renderWidth != (int)aWindowSize.x ||
-        internal_->renderHeight != (int)aWindowSize.y) {
-      internal_->renderWidth = (int)aWindowSize.x;
-      internal_->renderHeight = (int)aWindowSize.y;
-      internal_->needToResizeFBO = true;
+    // Check if the render dimensions need to change
+    if (internal_->renderWidth != newRenderWidth ||
+        internal_->renderHeight != newRenderHeight) {
+      internal_->renderWidth = newRenderWidth;
+      internal_->renderHeight = newRenderHeight;
+      internal_->needToResizeFBO =
+          true; // Signal that the FBO should be checked/resized
+      internal_->viewport =
+          newViewportSize; // Update stored ImGui viewport size
 
-      if (!internal_->occtAspectWindow.IsNull()) {
+      // Update OCCT's window representation (Aspect_Window)
+      if (internal_->occtAspectWindow) {
 #if defined(_WIN32)
         Handle(WNT_Window)::DownCast(internal_->occtAspectWindow)
-            ->SetPos(0, 0, internal_->renderWidth, internal_->renderHeight);
+            ->SetPos(0, 0, newRenderWidth, newRenderHeight);
 #elif defined(__APPLE__)
-        spdlog::debug("Cocoa_Window size update would be here if SetSize is "
-                      "available and needed.");
+        // Note: Cocoa_Window might not have a direct SetSize or equivalent.
+        // Behavior might differ on macOS.
+        spdlog::debug("OCCT View: Cocoa_Window size update may require "
+                      "platform-specific handling for SetSize.");
 #else // Linux/X11
         Handle(Xw_Window)::DownCast(internal_->occtAspectWindow)
-            ->SetSize(internal_->renderWidth, internal_->renderHeight);
+            ->SetSize(newRenderWidth, newRenderHeight);
 #endif
-        if (!internal_->view.IsNull()) {
+        // If the underlying OCCT window resizes, the V3d_View also needs to be
+        // notified.
+        if (internal_->view) {
           internal_->view->MustBeResized();
         }
       }
 
-      if (!internal_->view.IsNull()) {
-        Handle(Graphic3d_Camera) aCamera = internal_->view->Camera();
-        aCamera->SetAspect((float)internal_->renderWidth /
-                           (float)internal_->renderHeight);
+      // Update V3d_View's camera aspect ratio
+      if (internal_->view) {
+        internal_->view->Camera()->SetAspect(
+            static_cast<float>(newRenderWidth) /
+            static_cast<float>(newRenderHeight));
       }
-      internal_->viewport = aWindowSize;
     }
 
-    resizeOffscreenFramebuffer(internal_->renderWidth, internal_->renderHeight);
-
-    if (!internal_->view.IsNull())
-      internal_->view->Redraw();
+    // Attempt to resize the offscreen framebuffer.
+    // This uses internal_->renderWidth and internal_->renderHeight, which are
+    // now updated if there was a change. It also considers the
+    // internal_->needToResizeFBO flag.
+    if (resizeOffscreenFramebuffer(internal_->renderWidth,
+                                   internal_->renderHeight)) {
+      // If the FBO was actually resized, the view needs to be redrawn.
+      if (internal_->view) {
+        internal_->view->Redraw();
+      }
+    }
 
     internal_->viewPos = ImGui::GetCursorScreenPos();
 
@@ -540,7 +558,7 @@ void GlfwOcctView::renderGui() {
       ImGui::Image(
           (ImTextureID)(uintptr_t)internal_->offscreenFBO->ColorTexture()
               ->TextureId(),
-          aWindowSize, ImVec2(0.f, 1.f), ImVec2(1.f, 0.f));
+          newViewportSize, ImVec2(0.f, 1.f), ImVec2(1.f, 0.f));
 
       internal_->renderWindowHasFocus = ImGui::IsItemHovered();
     }
@@ -697,9 +715,10 @@ void GlfwOcctView::initVisualSettings() {
   selectionDrawer->SetTypeOfDeflection(Aspect_TOD_RELATIVE);
   selectionDrawer->SetDeviationAngle(context_->DeviationAngle());
   selectionDrawer->SetDeviationCoefficient(context_->DeviationCoefficient());
-  context_->SetSelectionStyle(selectionDrawer); // equal to
-                                                // SetHighlightStyle(Prs3d_TypeOfHighlight_Selected,
-                                                // selectionDrawer);
+  context_->SetSelectionStyle(
+      selectionDrawer); // equal to
+                        // SetHighlightStyle(Prs3d_TypeOfHighlight_Selected,
+                        // selectionDrawer);
   context_->SetHighlightStyle(Prs3d_TypeOfHighlight_LocalSelected,
                               selectionDrawer);
   context_->SetHighlightStyle(Prs3d_TypeOfHighlight_SubIntensity,
