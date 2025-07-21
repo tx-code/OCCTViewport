@@ -34,6 +34,7 @@ struct GLFWwindow;
 class Prs3d_Drawer;
 class AIS_Shape;
 class AIS_InteractiveObject;
+class OCAFWidget;
 
 // Using protected inheritance because:
 // Public members from AIS_ViewController become protected in GlfwOcctView
@@ -62,21 +63,6 @@ protected:
 
   //! Render ImGUI.
   void renderGui();
-
-  //! Render OCAF Demo window.
-  void renderOCAFDemo();
-
-  //! Render TDataStd sample controls.
-  void renderTDataStdSample();
-
-  //! Render TDocStd sample controls.
-  void renderTDocStdSample();
-
-  //! Render TNaming sample controls.
-  void renderTNamingSample();
-
-  //! Render TPrsStd sample controls.
-  void renderTPrsStdSample();
 
   //! Fill 3D Viewer with a DEMO items.
   void initDemoScene();
