@@ -26,6 +26,7 @@
 #include <imgui.h>
 #include <imgui_impl_glfw.h>
 #include <imgui_impl_opengl3.h>
+#include <imgui_internal.h>
 
 // OCCT
 #include <AIS_AnimationCamera.hxx>
@@ -378,32 +379,73 @@ void GlfwOcctView::renderGui() {
   Graphic3d_Vec2i aAdjustedMousePos =
       adjustMousePosition(aMousePos.x(), aMousePos.y());
 
-  // Setup main dockspace
-  ImGuiViewport *viewport = ImGui::GetMainViewport();
-  ImGui::SetNextWindowPos(viewport->Pos);
-  ImGui::SetNextWindowSize(viewport->Size);
+  // DockSpace - based on GitHub issue #5209 solution
+  static ImGuiDockNodeFlags dockspace_flags =
+      ImGuiDockNodeFlags_None | ImGuiDockNodeFlags_PassthruCentralNode |
+      ImGuiDockNodeFlags_NoDockingOverCentralNode;
+  ImGuiWindowFlags window_flags =
+      ImGuiWindowFlags_MenuBar | ImGuiWindowFlags_NoDocking;
+
+  const ImGuiViewport *viewport = ImGui::GetMainViewport();
+  ImGui::SetNextWindowPos(viewport->WorkPos);
+  ImGui::SetNextWindowSize(viewport->WorkSize);
   ImGui::SetNextWindowViewport(viewport->ID);
 
-  ImGuiWindowFlags window_flags = ImGuiWindowFlags_NoDocking;
+  ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
+  ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
   window_flags |= ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoCollapse |
                   ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove;
   window_flags |=
       ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoNavFocus;
-  window_flags |= ImGuiWindowFlags_NoBackground;
 
-  // Create main dockspace window
-  ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
-  ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
+  // When using ImGuiDockNodeFlags_PassthruCentralNode, DockSpace() will render
+  // our background and handle the pass-thru hole, so we ask Begin() to not
+  // render a background.
+  if (dockspace_flags & ImGuiDockNodeFlags_PassthruCentralNode)
+    window_flags |= ImGuiWindowFlags_NoBackground;
+
   ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
-
-  ImGui::Begin("DockSpace", nullptr, window_flags);
-  ImGui::PopStyleVar(3);
+  ImGui::Begin("DockSpace Demo", nullptr, window_flags);
+  ImGui::PopStyleVar();
+  ImGui::PopStyleVar(2);
 
   // Submit the DockSpace
   ImGuiIO &io = ImGui::GetIO();
   if (io.ConfigFlags & ImGuiConfigFlags_DockingEnable) {
-    ImGuiID dockspace_id = ImGui::GetID("MainDockSpace");
-    ImGui::DockSpace(dockspace_id, ImVec2(0.0f, 0.0f), ImGuiDockNodeFlags_None);
+    ImGuiID dockspace_id = ImGui::GetID("MyDockSpace");
+    ImGui::DockSpace(dockspace_id, ImVec2(0.0f, 0.0f), dockspace_flags);
+
+    static bool first_time = true;
+    if (first_time) {
+      first_time = false;
+
+      ImGui::DockBuilderRemoveNode(dockspace_id);
+      ImGui::DockBuilderAddNode(dockspace_id,
+                                dockspace_flags | ImGuiDockNodeFlags_DockSpace);
+      ImGui::DockBuilderSetNodeSize(dockspace_id, viewport->WorkSize);
+
+      // Use Right split and invert parameters to make OCCT Viewport the central
+      // node This ensures proper auto-expanding behavior when side panels are
+      // removed
+      ImGuiID viewportId = -1; // This will become the central node
+      auto renderInfoId = ImGui::DockBuilderSplitNode(
+          dockspace_id, ImGuiDir_Right, 0.25f, nullptr, &viewportId);
+
+      // Dock windows to their respective nodes
+      ImGui::DockBuilderDockWindow("Render Info", renderInfoId);
+      ImGui::DockBuilderDockWindow("OCCT Viewport", viewportId);
+
+      // Set central node properties to prevent docking over it
+      ImGuiDockNode *central_node = ImGui::DockBuilderGetNode(viewportId);
+      if (central_node) {
+        central_node->LocalFlags |=
+            ImGuiDockNodeFlags_NoTabBar | ImGuiDockNodeFlags_NoDockingOverMe |
+            ImGuiDockNodeFlags_NoDockingOverCentralNode |
+            ImGuiDockNodeFlags_NoDockingOverEmpty;
+      }
+
+      ImGui::DockBuilderFinish(dockspace_id);
+    }
   }
 
   ImGui::End();
@@ -517,8 +559,37 @@ void GlfwOcctView::renderGui() {
   }
   ImGui::End();
 
-  // OCCT Viewport Window - now dockable
-  if (ImGui::Begin("OCCT Viewport")) {
+  // OCCT Viewport Window - ensure it stays docked
+  ImGuiWindowFlags viewport_window_flags = ImGuiWindowFlags_NoCollapse;
+
+  // Prevent the viewport from floating by forcing it back to dock
+  static bool viewport_should_dock = true;
+  if (viewport_should_dock) {
+    ImGuiID dockspace_id = ImGui::GetID("MyDockSpace");
+    ImGuiDockNode *central_node =
+        ImGui::DockBuilderGetCentralNode(dockspace_id);
+    if (central_node) {
+      ImGui::SetNextWindowDockID(central_node->ID, ImGuiCond_Appearing);
+    }
+  }
+
+  if (ImGui::Begin("OCCT Viewport", nullptr, viewport_window_flags)) {
+    // Ensure central node protection is maintained
+    ImGuiID dockspace_id = ImGui::GetID("MyDockSpace");
+    ImGuiDockNode *central_node =
+        ImGui::DockBuilderGetCentralNode(dockspace_id);
+    if (central_node) {
+      // Maintain protection flags
+      central_node->LocalFlags |= ImGuiDockNodeFlags_NoTabBar |
+                                  ImGuiDockNodeFlags_NoDockingOverMe |
+                                  ImGuiDockNodeFlags_NoDockingOverCentralNode |
+                                  ImGuiDockNodeFlags_NoDockingOverEmpty;
+    }
+
+    // Check if window is floating and force it back to dock
+    if (ImGui::IsWindowDocked() == false && central_node) {
+      ImGui::SetNextWindowDockID(central_node->ID, ImGuiCond_Always);
+    }
     ImVec2 newViewportSize = ImGui::GetContentRegionAvail();
     int newRenderWidth = static_cast<int>(newViewportSize.x);
     int newRenderHeight = static_cast<int>(newViewportSize.y);
