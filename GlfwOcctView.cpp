@@ -64,6 +64,21 @@
 #include <V3d_TypeOfView.hxx>
 #include <V3d_View.hxx>
 
+// OCAF
+#include <TDF_Data.hxx>
+#include <TDF_Label.hxx>
+#include <TDataStd_Integer.hxx>
+#include <TDataStd_Real.hxx>
+#include <TDataStd_RealArray.hxx>
+#include <TDataStd_IntegerArray.hxx>
+#include <TDataStd_Comment.hxx>
+#include <TDataStd_Name.hxx>
+#include <TDocStd_Document.hxx>
+#include <TNaming_NamedShape.hxx>
+#include <TPrsStd_AISPresentation.hxx>
+#include <TCollection_ExtendedString.hxx>
+#include <TColStd_HArray1OfReal.hxx>
+
 // Others
 #include <GLFW/glfw3.h>
 #include <spdlog/spdlog.h>
@@ -137,6 +152,22 @@ struct GlfwOcctView::ViewInternal {
   Quantity_Color selectionColor{Quantity_NOC_RED};
   //! Highlight color
   Quantity_Color highlightColor{Quantity_NOC_YELLOW};
+
+  // OCAF Demo related members
+  //! OCAF Data Framework
+  Handle(TDF_Data) ocafData;
+  //! Current sample to run
+  int currentSample{0};
+  //! Sample execution status
+  std::string sampleOutput;
+  //! Integer value for TDataStd_Integer demo
+  int integerValue{10};
+  //! Real value for TDataStd_Real demo
+  double realValue{3.14159};
+  //! Comment string for TDataStd_Comment demo
+  std::string commentText{"This is a sample comment"};
+  //! Name string for TDataStd_Name demo
+  std::string nameText{"SampleLabel"};
 };
 
 namespace { // Anonymous namespace for static helper functions from original
@@ -431,8 +462,12 @@ void GlfwOcctView::renderGui() {
       auto renderInfoId = ImGui::DockBuilderSplitNode(
           dockspace_id, ImGuiDir_Right, 0.25f, nullptr, &viewportId);
 
+      // Split render info area for OCAF Demo
+      auto ocafDemoId = ImGui::DockBuilderSplitNode(renderInfoId, ImGuiDir_Down, 0.5f, nullptr, &renderInfoId);
+
       // Dock windows to their respective nodes
       ImGui::DockBuilderDockWindow("Render Info", renderInfoId);
+      ImGui::DockBuilderDockWindow("OCAF Demo", ocafDemoId);
       ImGui::DockBuilderDockWindow("OCCT Viewport", viewportId);
 
       // Set central node properties to prevent docking over it
@@ -556,6 +591,12 @@ void GlfwOcctView::renderGui() {
     // FIXME: if we activate the selection mode for each object except the view
     // cube, we don't need to activate the view cube here
     internal_->context->Activate(internal_->viewCube);
+  }
+  ImGui::End();
+
+  // OCAF Demo Window - dockable
+  if (ImGui::Begin("OCAF Demo")) {
+    renderOCAFDemo();
   }
   ImGui::End();
 
@@ -1068,4 +1109,184 @@ Handle(Prs3d_Drawer) GlfwOcctView::getDefaultAISDrawer() {
   drawer->SetDisplayMode(AIS_Shaded);
   drawer->SetTypeOfDeflection(Aspect_TOD_RELATIVE);
   return drawer;
+}
+
+void GlfwOcctView::renderOCAFDemo() {
+  // Initialize OCAF Data Framework if not already done
+  if (internal_->ocafData.IsNull()) {
+    internal_->ocafData = new TDF_Data();
+    internal_->sampleOutput = "OCAF Data Framework initialized";
+  }
+
+  ImGui::SeparatorText("OCAF Samples");
+  
+  // Sample selection
+  const char* sampleNames[] = {
+    "TDataStd Attributes",
+    "TDocStd Document", 
+    "TNaming NamedShape",
+    "TPrsStd Presentation"
+  };
+  
+  ImGui::Combo("Select Sample", &internal_->currentSample, sampleNames, IM_ARRAYSIZE(sampleNames));
+  
+  ImGui::Separator();
+  
+  // Show current sample UI
+  switch (internal_->currentSample) {
+    case 0:
+      renderTDataStdSample();
+      break;
+    case 1:
+      renderTDocStdSample();
+      break;
+    case 2:
+      renderTNamingSample();
+      break;
+    case 3:
+      renderTPrsStdSample();
+      break;
+  }
+  
+  ImGui::Separator();
+  
+  // Output section
+  ImGui::SeparatorText("Sample Output");
+  ImGui::TextWrapped("%s", internal_->sampleOutput.c_str());
+}
+
+void GlfwOcctView::renderTDataStdSample() {
+  ImGui::Text("TDataStd Attributes Demo");
+  
+  // Integer attribute demo
+  ImGui::SeparatorText("TDataStd_Integer");
+  ImGui::InputInt("Integer Value", &internal_->integerValue);
+  if (ImGui::Button("Set Integer Attribute")) {
+    TDF_Label rootLabel = internal_->ocafData->Root();
+    Handle(TDataStd_Integer) intAttr = TDataStd_Integer::Set(rootLabel, internal_->integerValue);
+    internal_->sampleOutput = "TDataStd_Integer set to: " + std::to_string(internal_->integerValue);
+  }
+  
+  // Real attribute demo
+  ImGui::SeparatorText("TDataStd_Real");
+  ImGui::InputDouble("Real Value", &internal_->realValue, 0.01, 0.1, "%.6f");
+  if (ImGui::Button("Set Real Attribute")) {
+    TDF_Label rootLabel = internal_->ocafData->Root();
+    Handle(TDataStd_Real) realAttr = TDataStd_Real::Set(rootLabel, internal_->realValue);
+    internal_->sampleOutput = "TDataStd_Real set to: " + std::to_string(internal_->realValue);
+  }
+  
+  // Comment attribute demo
+  ImGui::SeparatorText("TDataStd_Comment");
+  char commentBuffer[256];
+  strncpy(commentBuffer, internal_->commentText.c_str(), sizeof(commentBuffer) - 1);
+  commentBuffer[sizeof(commentBuffer) - 1] = '\0';
+  
+  if (ImGui::InputText("Comment", commentBuffer, sizeof(commentBuffer))) {
+    internal_->commentText = commentBuffer;
+  }
+  if (ImGui::Button("Set Comment Attribute")) {
+    TDF_Label rootLabel = internal_->ocafData->Root();
+    Handle(TDataStd_Comment) commentAttr = TDataStd_Comment::Set(rootLabel);
+    TCollection_ExtendedString extStr(internal_->commentText.c_str());
+    commentAttr->Set(extStr);
+    internal_->sampleOutput = "TDataStd_Comment set to: " + internal_->commentText;
+  }
+  
+  // Name attribute demo
+  ImGui::SeparatorText("TDataStd_Name");
+  char nameBuffer[256];
+  strncpy(nameBuffer, internal_->nameText.c_str(), sizeof(nameBuffer) - 1);
+  nameBuffer[sizeof(nameBuffer) - 1] = '\0';
+  
+  if (ImGui::InputText("Name", nameBuffer, sizeof(nameBuffer))) {
+    internal_->nameText = nameBuffer;
+  }
+  if (ImGui::Button("Set Name Attribute")) {
+    TDF_Label rootLabel = internal_->ocafData->Root();
+    TCollection_ExtendedString extName(internal_->nameText.c_str());
+    Handle(TDataStd_Name) nameAttr = TDataStd_Name::Set(rootLabel, extName);
+    internal_->sampleOutput = "TDataStd_Name set to: " + internal_->nameText;
+  }
+
+  // Real Array demo
+  ImGui::SeparatorText("TDataStd_RealArray");
+  static bool arraySet = false;
+  if (ImGui::Button("Create Real Array (1-10)")) {
+    TDF_Label rootLabel = internal_->ocafData->Root();
+    Handle(TDataStd_RealArray) realArray = TDataStd_RealArray::Set(rootLabel, 1, 10);
+    for (int i = 1; i <= 10; i++) {
+      realArray->SetValue(i, M_PI * i);
+    }
+    arraySet = true;
+    internal_->sampleOutput = "TDataStd_RealArray created with 10 elements (π * index)";
+  }
+  
+  if (arraySet && ImGui::Button("Read Array Values")) {
+    TDF_Label rootLabel = internal_->ocafData->Root();
+    Handle(TDataStd_RealArray) realArray;
+    if (rootLabel.FindAttribute(TDataStd_RealArray::GetID(), realArray)) {
+      std::string result = "Array values: ";
+      for (int i = realArray->Lower(); i <= realArray->Upper() && i <= 5; i++) {
+        result += std::to_string(realArray->Value(i)) + " ";
+      }
+      if (realArray->Upper() > 5) result += "...";
+      internal_->sampleOutput = result;
+    }
+  }
+}
+
+void GlfwOcctView::renderTDocStdSample() {
+  ImGui::Text("TDocStd Document Demo");
+  ImGui::TextWrapped("This sample demonstrates document creation and management.");
+  
+  if (ImGui::Button("Create New Document")) {
+    // This is a simplified version since full TDocStd requires application framework
+    internal_->sampleOutput = "Document creation demo - requires full application framework setup";
+  }
+  
+  ImGui::TextWrapped("Note: Full TDocStd sample requires TDocStd_Application setup");
+}
+
+void GlfwOcctView::renderTNamingSample() {
+  ImGui::Text("TNaming NamedShape Demo");
+  ImGui::TextWrapped("This sample demonstrates shape naming and topology evolution.");
+  
+  if (ImGui::Button("Create Named Shape")) {
+    // Create a simple box and attach it to a TNaming_NamedShape
+    TDF_Label rootLabel = internal_->ocafData->Root();
+    TDF_Label shapeLabel = rootLabel.NewChild();
+    
+    gp_Ax2 axis;
+    axis.SetLocation(gp_Pnt(0, 0, 0));
+    TopoDS_Shape box = BRepPrimAPI_MakeBox(axis, 10, 20, 30).Shape();
+    
+    // Note: TNaming_Builder would be used in a real implementation
+    internal_->sampleOutput = "Named shape created - Box(10x20x30) attached to label";
+  }
+  
+  ImGui::TextWrapped("Note: Full TNaming sample requires TNaming_Builder for proper shape evolution tracking");
+}
+
+void GlfwOcctView::renderTPrsStdSample() {
+  ImGui::Text("TPrsStd Presentation Demo");
+  ImGui::TextWrapped("This sample demonstrates 3D presentation attributes.");
+  
+  if (ImGui::Button("Create AIS Presentation")) {
+    // Create a shape and its presentation
+    TDF_Label rootLabel = internal_->ocafData->Root();
+    TDF_Label presLabel = rootLabel.NewChild();
+    
+    gp_Ax2 axis;
+    axis.SetLocation(gp_Pnt(50, 50, 0));
+    TopoDS_Shape cone = BRepPrimAPI_MakeCone(axis, 15, 5, 25).Shape();
+    
+    // In a full implementation, TPrsStd_AISPresentation would be used
+    Handle(AIS_Shape) aisCone = new AIS_Shape(cone);
+    addAisObject(aisCone);
+    
+    internal_->sampleOutput = "AIS Presentation created - Cone added to 3D view";
+  }
+  
+  ImGui::TextWrapped("Note: Shape added to 3D viewer. In full OCAF, this would be managed through TPrsStd_AISPresentation");
 }

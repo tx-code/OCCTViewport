@@ -63,6 +63,21 @@ protected:
   //! Render ImGUI.
   void renderGui();
 
+  //! Render OCAF Demo window.
+  void renderOCAFDemo();
+
+  //! Render TDataStd sample controls.
+  void renderTDataStdSample();
+
+  //! Render TDocStd sample controls.
+  void renderTDocStdSample();
+
+  //! Render TNaming sample controls.
+  void renderTNamingSample();
+
+  //! Render TPrsStd sample controls.
+  void renderTPrsStdSample();
+
   //! Fill 3D Viewer with a DEMO items.
   void initDemoScene();
 

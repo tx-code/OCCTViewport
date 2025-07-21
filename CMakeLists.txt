@@ -29,7 +29,8 @@ add_executable(OcctImgui ${SOURCES})
 
 # Link libraries
 target_link_libraries(OcctImgui
-PRIVATE    TKernel TKMath TKG2d TKG3d TKGeomBase TKGeomAlgo TKBRep TKTopAlgo TKPrim TKMesh TKService TKOpenGl TKV3d
+  PRIVATE   
+  ${OpenCASCADE_LIBRARIES}
   glfw
   spdlog::spdlog
   imgui::imgui
