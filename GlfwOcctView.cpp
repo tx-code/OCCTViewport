@@ -358,6 +358,10 @@ void GlfwOcctView::initGui() {
 
   ImGui_ImplGlfw_InitForOpenGL(internal_->glfwWindow, true);
   ImGui_ImplOpenGL3_Init("#version 330");
+
+  // docking
+  ImGui::GetIO().ConfigFlags |= ImGuiConfigFlags_DockingEnable;
+  ImGui::GetIO().ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;
 }
 
 void GlfwOcctView::renderGui() {
@@ -374,14 +378,38 @@ void GlfwOcctView::renderGui() {
   Graphic3d_Vec2i aAdjustedMousePos =
       adjustMousePosition(aMousePos.x(), aMousePos.y());
 
-  float infoWidth = aIO.DisplaySize.x * 0.25f;
-  float viewportWidth = aIO.DisplaySize.x - infoWidth;
+  // Setup main dockspace
+  ImGuiViewport *viewport = ImGui::GetMainViewport();
+  ImGui::SetNextWindowPos(viewport->Pos);
+  ImGui::SetNextWindowSize(viewport->Size);
+  ImGui::SetNextWindowViewport(viewport->ID);
 
-  ImGui::SetNextWindowPos(ImVec2(0, 0));
-  ImGui::SetNextWindowSize(ImVec2(infoWidth, aIO.DisplaySize.y));
-  if (ImGui::Begin("Render Info", nullptr,
-                   ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
-                       ImGuiWindowFlags_NoCollapse)) {
+  ImGuiWindowFlags window_flags = ImGuiWindowFlags_NoDocking;
+  window_flags |= ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoCollapse |
+                  ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove;
+  window_flags |=
+      ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoNavFocus;
+  window_flags |= ImGuiWindowFlags_NoBackground;
+
+  // Create main dockspace window
+  ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
+  ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
+  ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
+
+  ImGui::Begin("DockSpace", nullptr, window_flags);
+  ImGui::PopStyleVar(3);
+
+  // Submit the DockSpace
+  ImGuiIO &io = ImGui::GetIO();
+  if (io.ConfigFlags & ImGuiConfigFlags_DockingEnable) {
+    ImGuiID dockspace_id = ImGui::GetID("MainDockSpace");
+    ImGui::DockSpace(dockspace_id, ImVec2(0.0f, 0.0f), ImGuiDockNodeFlags_None);
+  }
+
+  ImGui::End();
+
+  // Render Info Window - now dockable
+  if (ImGui::Begin("Render Info")) {
     int width, height;
     glfwGetWindowSize(internal_->glfwWindow, &width, &height);
     ImGui::Text("Window Size: %d x %d", width, height);
@@ -489,13 +517,8 @@ void GlfwOcctView::renderGui() {
   }
   ImGui::End();
 
-  ImGui::SetNextWindowPos(ImVec2(infoWidth, 0));
-  ImGui::SetNextWindowSize(ImVec2(viewportWidth, aIO.DisplaySize.y));
-  if (ImGui::Begin("OCCT Viewport", nullptr,
-                   ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
-                       ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar |
-                       ImGuiWindowFlags_NoScrollWithMouse |
-                       ImGuiWindowFlags_NoBringToFrontOnFocus)) {
+  // OCCT Viewport Window - now dockable
+  if (ImGui::Begin("OCCT Viewport")) {
     ImVec2 newViewportSize = ImGui::GetContentRegionAvail();
     int newRenderWidth = static_cast<int>(newViewportSize.x);
     int newRenderHeight = static_cast<int>(newViewportSize.y);
@@ -567,6 +590,18 @@ void GlfwOcctView::renderGui() {
 
   ImGui::Render();
   ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+
+  // Update and Render additional Platform Windows
+  // (Platform functions may change the current OpenGL context, so we
+  // save/restore it to make it easier to paste this code elsewhere.
+  //  For this specific demo app we could also call
+  //  glfwMakeContextCurrent(window) directly)
+  if (ImGui::GetIO().ConfigFlags & ImGuiConfigFlags_ViewportsEnable) {
+    GLFWwindow *backup_current_context = glfwGetCurrentContext();
+    ImGui::UpdatePlatformWindows();
+    ImGui::RenderPlatformWindowsDefault();
+    glfwMakeContextCurrent(backup_current_context);
+  }
 
   glfwSwapBuffers(internal_->glfwWindow);
 }
@@ -811,6 +846,26 @@ void GlfwOcctView::onResize(int theWidth, int theHeight) {
 Graphic3d_Vec2i GlfwOcctView::adjustMousePosition(int thePosX,
                                                   int thePosY) const {
   if (internal_->renderWindowHasFocus) {
+    // In multi-viewport mode, we need to convert coordinates properly
+    if (ImGui::GetIO().ConfigFlags & ImGuiConfigFlags_ViewportsEnable) {
+      // Get the current ImGui window's viewport position in screen coordinates
+      ImGuiViewport *currentViewport =
+          ImGui::FindViewportByPlatformHandle(internal_->glfwWindow);
+      if (currentViewport) {
+        // Convert GLFW window coordinates to screen coordinates
+        int windowPosX, windowPosY;
+        glfwGetWindowPos(internal_->glfwWindow, &windowPosX, &windowPosY);
+        int screenMouseX = windowPosX + thePosX;
+        int screenMouseY = windowPosY + thePosY;
+
+        // Convert to viewport-relative coordinates
+        return Graphic3d_Vec2i(
+            screenMouseX - static_cast<int>(internal_->viewPos.x),
+            screenMouseY - static_cast<int>(internal_->viewPos.y));
+      }
+    }
+
+    // Fallback for single viewport mode
     return Graphic3d_Vec2i(thePosX - static_cast<int>(internal_->viewPos.x),
                            thePosY - static_cast<int>(internal_->viewPos.y));
   }
