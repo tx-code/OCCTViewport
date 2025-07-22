@@ -22,6 +22,7 @@
 
 #include "GlfwOcctView.h"
 #include "DFBrowserWidget.h"
+#include "VInspectorWidget.h"
 
 // ImGui
 #include <imgui.h>
@@ -142,6 +143,10 @@ struct GlfwOcctView::ViewInternal {
   // DFBrowser Widget
   //! DFBrowser Widget instance
   std::unique_ptr<DFBrowserWidget> dfBrowserWidget;
+  
+  // VInspector Widget  
+  //! VInspector Widget instance
+  std::unique_ptr<VInspectorWidget> vInspectorWidget;
 };
 
 namespace { // Anonymous namespace for static helper functions from original
@@ -198,6 +203,7 @@ GlfwOcctView::GlfwOcctView(GLFWwindow *aGlfwWindow) {
   internal_ = std::make_unique<ViewInternal>();
   internal_->glfwWindow = aGlfwWindow;
   internal_->dfBrowserWidget = std::make_unique<DFBrowserWidget>();
+  internal_->vInspectorWidget = std::make_unique<VInspectorWidget>();
 
   if (!internal_->glfwWindow) {
     Message::DefaultMessenger()->Send(
@@ -570,11 +576,57 @@ void GlfwOcctView::renderGui() {
   }
   ImGui::End();
 
-  // OCAF Browser Window - dockable
+  // OCAF Browser Window - dockable with tabs
   if (ImGui::Begin("OCAF Browser")) {
-    internal_->dfBrowserWidget->draw(internal_->context,
-                                     [this](const Handle(AIS_InteractiveObject) &
-                                            obj) { this->addAisObject(obj); });
+    if (ImGui::BeginTabBar("InspectorTabs", ImGuiTabBarFlags_None)) {
+      
+      // DFBrowser Tab
+      if (ImGui::BeginTabItem("DFBrowser")) {
+        internal_->dfBrowserWidget->draw(internal_->context,
+                                         [this](const Handle(AIS_InteractiveObject) &
+                                                obj) { this->addAisObject(obj); });
+        ImGui::EndTabItem();
+      }
+      
+      // VInspector Tab  
+      if (ImGui::BeginTabItem("VInspector")) {
+        // Setup VInspector callbacks
+        internal_->vInspectorWidget->setShowObjectCallback(
+          [this](const Handle(AIS_InteractiveObject)& obj) {
+            if (!obj.IsNull()) {
+              internal_->context->Display(obj, false);
+              internal_->context->UpdateCurrentViewer();
+              internal_->vInspectorWidget->updateTree();
+            }
+          }
+        );
+        
+        internal_->vInspectorWidget->setHideObjectCallback(
+          [this](const Handle(AIS_InteractiveObject)& obj) {
+            if (!obj.IsNull()) {
+              internal_->context->Erase(obj, false);
+              internal_->context->UpdateCurrentViewer();
+              internal_->vInspectorWidget->updateTree();
+            }
+          }
+        );
+        
+        internal_->vInspectorWidget->setSelectObjectCallback(
+          [this](const Handle(AIS_InteractiveObject)& obj) {
+            if (!obj.IsNull()) {
+              internal_->context->ClearSelected(false);
+              internal_->context->SetSelected(obj, false);
+              internal_->context->UpdateCurrentViewer();
+            }
+          }
+        );
+        
+        internal_->vInspectorWidget->draw(internal_->context);
+        ImGui::EndTabItem();
+      }
+      
+      ImGui::EndTabBar();
+    }
   }
   ImGui::End();
 

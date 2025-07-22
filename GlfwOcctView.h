@@ -35,6 +35,7 @@ class Prs3d_Drawer;
 class AIS_Shape;
 class AIS_InteractiveObject;
 class DFBrowserWidget;
+class VInspectorWidget;
 
 // Using protected inheritance because:
 // Public members from AIS_ViewController become protected in GlfwOcctView
