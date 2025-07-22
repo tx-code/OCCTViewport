@@ -21,7 +21,7 @@
 // SOFTWARE.
 
 #include "GlfwOcctView.h"
-#include "OCAFWidget.h"
+#include "DFBrowserWidget.h"
 
 // ImGui
 #include <imgui.h>
@@ -139,9 +139,9 @@ struct GlfwOcctView::ViewInternal {
   //! Highlight color
   Quantity_Color highlightColor{Quantity_NOC_YELLOW};
 
-  // OCAF Demo Widget
-  //! OCAF Demo Widget instance
-  std::unique_ptr<OCAFWidget> ocafWidget;
+  // DFBrowser Widget
+  //! DFBrowser Widget instance
+  std::unique_ptr<DFBrowserWidget> dfBrowserWidget;
 };
 
 namespace { // Anonymous namespace for static helper functions from original
@@ -197,7 +197,7 @@ Handle(OpenGl_GraphicDriver)
 GlfwOcctView::GlfwOcctView(GLFWwindow *aGlfwWindow) {
   internal_ = std::make_unique<ViewInternal>();
   internal_->glfwWindow = aGlfwWindow;
-  internal_->ocafWidget = std::make_unique<OCAFWidget>();
+  internal_->dfBrowserWidget = std::make_unique<DFBrowserWidget>();
 
   if (!internal_->glfwWindow) {
     Message::DefaultMessenger()->Send(
@@ -435,15 +435,15 @@ void GlfwOcctView::renderGui() {
       // removed
       ImGuiID viewportId = -1; // This will become the central node
       auto renderInfoId = ImGui::DockBuilderSplitNode(
-          dockspace_id, ImGuiDir_Right, 0.25f, nullptr, &viewportId);
+          dockspace_id, ImGuiDir_Right, 0.5f, nullptr, &viewportId);
 
-      // Split render info area for OCAF Demo
-      auto ocafDemoId = ImGui::DockBuilderSplitNode(
+      // Split render info area for DFBrowser
+      auto dfBrowserId = ImGui::DockBuilderSplitNode(
           renderInfoId, ImGuiDir_Down, 0.5f, nullptr, &renderInfoId);
 
       // Dock windows to their respective nodes
       ImGui::DockBuilderDockWindow("Render Info", renderInfoId);
-      ImGui::DockBuilderDockWindow("OCAF Demo", ocafDemoId);
+      ImGui::DockBuilderDockWindow("OCAF Browser", dfBrowserId);
       ImGui::DockBuilderDockWindow("OCCT Viewport", viewportId);
 
       // Set central node properties to prevent docking over it
@@ -570,11 +570,11 @@ void GlfwOcctView::renderGui() {
   }
   ImGui::End();
 
-  // OCAF Demo Window - dockable
-  if (ImGui::Begin("OCAF Demo")) {
-    internal_->ocafWidget->draw(internal_->context,
-                                [this](const Handle(AIS_InteractiveObject) &
-                                       obj) { this->addAisObject(obj); });
+  // OCAF Browser Window - dockable
+  if (ImGui::Begin("OCAF Browser")) {
+    internal_->dfBrowserWidget->draw(internal_->context,
+                                     [this](const Handle(AIS_InteractiveObject) &
+                                            obj) { this->addAisObject(obj); });
   }
   ImGui::End();
 

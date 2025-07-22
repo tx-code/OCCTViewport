@@ -34,7 +34,7 @@ struct GLFWwindow;
 class Prs3d_Drawer;
 class AIS_Shape;
 class AIS_InteractiveObject;
-class OCAFWidget;
+class DFBrowserWidget;
 
 // Using protected inheritance because:
 // Public members from AIS_ViewController become protected in GlfwOcctView
