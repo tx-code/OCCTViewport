@@ -1,5 +1,6 @@
 #include "geometry_client.h"
 #include <spdlog/spdlog.h>
+#include <chrono>
 
 GeometryClient::GeometryClient(const std::string& server_address) 
     : server_address_(server_address), connected_(false) {
@@ -22,10 +23,15 @@ bool GeometryClient::Connect() {
         channel_ = grpc::CreateChannel(server_address_, grpc::InsecureChannelCredentials());
         stub_ = geometry::GeometryService::NewStub(channel_);
         
-        // Test connection with GetSystemInfo
+        // Test connection with GetSystemInfo (with timeout)
         geometry::EmptyRequest request;
         geometry::SystemInfoResponse response;
         grpc::ClientContext context;
+        
+        // Set a 2-second timeout for connection test
+        std::chrono::system_clock::time_point deadline =
+            std::chrono::system_clock::now() + std::chrono::seconds(2);
+        context.set_deadline(deadline);
         
         grpc::Status status = stub_->GetSystemInfo(&context, request, &response);
         

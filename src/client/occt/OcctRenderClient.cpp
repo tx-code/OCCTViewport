@@ -20,8 +20,8 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
 
-#include "GlfwOcctView.h"
-#include "../client/grpc/geometry_client.h"
+#include "OcctRenderClient.h"
+#include "../grpc/geometry_client.h"
 
 // ImGui
 #include <imgui.h>
@@ -72,6 +72,7 @@
 #include <thread>
 #include <atomic>
 #include <mutex>
+#include <future>
 
 // Platform specific includes for Aspect_Window
 #if defined(_WIN32)
@@ -90,7 +91,7 @@
 #include <GLFW/glfw3native.h> // For native access
 
 // Definition of the PIMPL struct
-struct GlfwOcctView::ViewInternal {
+struct OcctRenderClient::ViewInternal {
   //! GLFW window
   GLFWwindow *glfwWindow{nullptr};
   //! OCCT's wrapper for the window
@@ -152,6 +153,28 @@ struct GlfwOcctView::ViewInternal {
   bool autoRefreshMeshes{false};
   float lastRefreshTime{0.0f};
   
+  // Cache for system info to avoid excessive network calls
+  GeometryClient::SystemInfo cachedSystemInfo;
+  float lastSystemInfoUpdateTime{0.0f};
+  static constexpr float SYSTEM_INFO_UPDATE_INTERVAL{1.0f}; // Update every 1 second
+  bool hasValidSystemInfo{false};
+  
+  // Connection status tracking
+  enum class ConnectionStatus {
+    Disconnected,
+    Connecting,
+    Connected,
+    Error
+  };
+  ConnectionStatus connectionStatus{ConnectionStatus::Disconnected};
+  std::string connectionErrorMessage;
+  float lastConnectionAttemptTime{0.0f};
+  static constexpr float RECONNECT_INTERVAL{5.0f}; // Retry connection every 5 seconds
+  
+  // Async connection handling
+  std::future<bool> connectionFuture;
+  std::atomic<bool> isConnecting{false};
+  
   // Thread safety for resource management
   std::atomic<bool> isShuttingDown{false};
   mutable std::mutex geometryClientMutex;
@@ -207,30 +230,30 @@ Handle(OpenGl_GraphicDriver)
 }
 } // namespace
 
-GlfwOcctView::GlfwOcctView(GLFWwindow *aGlfwWindow) {
+OcctRenderClient::OcctRenderClient(GLFWwindow *aGlfwWindow) {
   internal_ = std::make_unique<ViewInternal>();
   internal_->glfwWindow = aGlfwWindow;
 
   if (!internal_->glfwWindow) {
     Message::DefaultMessenger()->Send(
-        "GlfwOcctView: GLFW window is null on construction.", Message_Fail);
+        "OcctRenderClient: GLFW window is null on construction.", Message_Fail);
     return;
   }
 
-  // so we can get the GlfwOcctView pointer from the GLFW window
+  // so we can get the OcctRenderClient pointer from the GLFW window
   glfwSetWindowUserPointer(internal_->glfwWindow, this);
 
   // Set GLFW callbacks
   glfwSetWindowSizeCallback(internal_->glfwWindow,
-                            GlfwOcctView::onResizeCallback);
+                            OcctRenderClient::onResizeCallback);
   glfwSetFramebufferSizeCallback(internal_->glfwWindow,
-                                 GlfwOcctView::onFBResizeCallback);
+                                 OcctRenderClient::onFBResizeCallback);
   glfwSetScrollCallback(internal_->glfwWindow,
-                        GlfwOcctView::onMouseScrollCallback);
+                        OcctRenderClient::onMouseScrollCallback);
   glfwSetMouseButtonCallback(internal_->glfwWindow,
-                             GlfwOcctView::onMouseButtonCallback);
+                             OcctRenderClient::onMouseButtonCallback);
   glfwSetCursorPosCallback(internal_->glfwWindow,
-                           GlfwOcctView::onMouseMoveCallback);
+                           OcctRenderClient::onMouseMoveCallback);
 
   // Create the OCCT Aspect_Window wrapper
 #if defined(_WIN32)
@@ -248,50 +271,50 @@ GlfwOcctView::GlfwOcctView(GLFWwindow *aGlfwWindow) {
   if (!internal_->occtAspectWindow.IsNull()) {
     internal_->occtAspectWindow->SetVirtual(Standard_True); // Set as virtual
   } else {
-    spdlog::error("GlfwOcctView: Failed to create OCCT Aspect_Window wrapper.");
+    spdlog::error("OcctRenderClient: Failed to create OCCT Aspect_Window wrapper.");
   }
 }
 
-GlfwOcctView::~GlfwOcctView() {
+OcctRenderClient::~OcctRenderClient() {
   // std::unique_ptr<ViewInternal> internal_ will be automatically destroyed.
 }
 
 // Static callback implementations (were previously in .h or implied)
-void GlfwOcctView::onResizeCallback(GLFWwindow *theWin, int theWidth,
+void OcctRenderClient::onResizeCallback(GLFWwindow *theWin, int theWidth,
                                     int theHeight) {
   toView(theWin)->onResize(theWidth, theHeight);
 }
-void GlfwOcctView::onFBResizeCallback(GLFWwindow *theWin, int theWidth,
+void OcctRenderClient::onFBResizeCallback(GLFWwindow *theWin, int theWidth,
                                       int theHeight) {
   toView(theWin)->onResize(theWidth, theHeight);
 }
-void GlfwOcctView::onMouseScrollCallback(GLFWwindow *theWin,
+void OcctRenderClient::onMouseScrollCallback(GLFWwindow *theWin,
                                          double referidoOffsetX,
                                          double theOffsetY) {
   toView(theWin)->onMouseScroll(referidoOffsetX, theOffsetY);
 }
-void GlfwOcctView::onMouseButtonCallback(GLFWwindow *theWin, int theButton,
+void OcctRenderClient::onMouseButtonCallback(GLFWwindow *theWin, int theButton,
                                          int theAction, int theMods) {
   toView(theWin)->onMouseButton(theButton, theAction, theMods);
 }
-void GlfwOcctView::onMouseMoveCallback(GLFWwindow *theWin, double thePosX,
+void OcctRenderClient::onMouseMoveCallback(GLFWwindow *theWin, double thePosX,
                                        double thePosY) {
   toView(theWin)->onMouseMove((int)thePosX, (int)thePosY);
 }
 
-GlfwOcctView *GlfwOcctView::toView(GLFWwindow *theWin) {
-  return static_cast<GlfwOcctView *>(glfwGetWindowUserPointer(theWin));
+OcctRenderClient *OcctRenderClient::toView(GLFWwindow *theWin) {
+  return static_cast<OcctRenderClient *>(glfwGetWindowUserPointer(theWin));
 }
 
-void GlfwOcctView::errorCallback(int theError, const char *theDescription) {
+void OcctRenderClient::errorCallback(int theError, const char *theDescription) {
   Message::DefaultMessenger()->Send(TCollection_AsciiString("Error") +
                                         theError + ": " + theDescription,
                                     Message_Fail);
 }
 
-void GlfwOcctView::run() {
+void OcctRenderClient::run() {
   if (!internal_->glfwWindow || internal_->occtAspectWindow.IsNull()) {
-    spdlog::error("GlfwOcctView::run(): Window not properly initialized.");
+    spdlog::error("OcctRenderClient::run(): Window not properly initialized.");
     return;
   }
 
@@ -301,58 +324,58 @@ void GlfwOcctView::run() {
   try {
     initOCCTRenderingSystem();
     if (internal_->view.IsNull()) {
-      spdlog::error("GlfwOcctView::run(): OCCT view initialization failed");
+      spdlog::error("OcctRenderClient::run(): OCCT view initialization failed");
       return;
     }
     
     try {
       initGui(); // Initialize GUI before gRPC to ensure OpenGL context is stable
-      spdlog::info("GlfwOcctView::run(): GUI initialization completed");
+      spdlog::info("OcctRenderClient::run(): GUI initialization completed");
     } catch (const std::exception& e) {
-      spdlog::error("GlfwOcctView::run(): GUI initialization failed: {}", e.what());
+      spdlog::error("OcctRenderClient::run(): GUI initialization failed: {}", e.what());
       throw;
     }
     
     // Initialize gRPC client with context isolation
-    try {
-      initGeometryClient();
-      spdlog::info("GlfwOcctView::run(): gRPC client initialization completed");
-    } catch (const std::exception& e) {
-      spdlog::warn("GlfwOcctView::run(): gRPC client initialization failed, continuing without gRPC: {}", e.what());
+    spdlog::info("OcctRenderClient: Initializing gRPC geometry client with OpenGL context isolation...");
+    if (initGeometryClient()) {
+      spdlog::info("OcctRenderClient::run(): gRPC client initialization completed");
+    } else {
+      spdlog::warn("OcctRenderClient::run(): gRPC client not available, continuing in standalone mode");
     }
     
     try {
       initDemoScene();
-      spdlog::info("GlfwOcctView::run(): Demo scene initialization completed");
+      spdlog::info("OcctRenderClient::run(): Demo scene initialization completed");
     } catch (const std::exception& e) {
-      spdlog::error("GlfwOcctView::run(): Demo scene initialization failed: {}", e.what());
+      spdlog::error("OcctRenderClient::run(): Demo scene initialization failed: {}", e.what());
       throw;
     }
 
     try {
       mainloop();
     } catch (const std::exception& e) {
-      spdlog::error("GlfwOcctView::run(): Main loop exception: {}", e.what());
+      spdlog::error("OcctRenderClient::run(): Main loop exception: {}", e.what());
       throw;
     }
   } catch (const std::exception& e) {
-    spdlog::error("GlfwOcctView::run(): Exception during runtime: {}", e.what());
+    spdlog::error("OcctRenderClient::run(): Exception during runtime: {}", e.what());
   } catch (...) {
-    spdlog::error("GlfwOcctView::run(): Unknown exception during runtime");
+    spdlog::error("OcctRenderClient::run(): Unknown exception during runtime");
   }
   
   cleanup();
 }
 
-void GlfwOcctView::addAisObject(const Handle(AIS_InteractiveObject) &
+void OcctRenderClient::addAisObject(const Handle(AIS_InteractiveObject) &
                                 theAisObject) {
   if (theAisObject.IsNull()) {
-    spdlog::error("GlfwOcctView::addAisObject(): AIS object is null.");
+    spdlog::error("OcctRenderClient::addAisObject(): AIS object is null.");
     return;
   }
 
   if (internal_->context.IsNull()) {
-    spdlog::error("GlfwOcctView::addAisObject(): Context is not initialized.");
+    spdlog::error("OcctRenderClient::addAisObject(): Context is not initialized.");
     return;
   }
 
@@ -360,7 +383,7 @@ void GlfwOcctView::addAisObject(const Handle(AIS_InteractiveObject) &
   internal_->context->Display(theAisObject, AIS_Shaded, 0, false);
 }
 
-void GlfwOcctView::initOCCTRenderingSystem() {
+void OcctRenderClient::initOCCTRenderingSystem() {
   if (!internal_->glfwWindow || internal_->occtAspectWindow.IsNull()) {
     spdlog::error("No GLFW window or OCCT Aspect_Window found.");
     return;
@@ -372,10 +395,10 @@ void GlfwOcctView::initOCCTRenderingSystem() {
   initVisualSettings();
 }
 
-void GlfwOcctView::initOffscreenRendering() {
+void OcctRenderClient::initOffscreenRendering() {
   if (internal_->glContext.IsNull() || internal_->view.IsNull()) {
     spdlog::warn(
-        "GlfwOcctView::initOffscreenRendering(): GLContext or View is Null.");
+        "OcctRenderClient::initOffscreenRendering(): GLContext or View is Null.");
     return;
   }
 
@@ -390,11 +413,11 @@ void GlfwOcctView::initOffscreenRendering() {
         Graphic3d_TOTF_BILINEAR);
     internal_->view->View()->SetFBO(internal_->offscreenFBO);
   } else {
-    spdlog::error("GlfwOcctView: Failed to create offscreen FBO.");
+    spdlog::error("OcctRenderClient: Failed to create offscreen FBO.");
   }
 }
 
-bool GlfwOcctView::resizeOffscreenFramebuffer(int theWidth, int theHeight) {
+bool OcctRenderClient::resizeOffscreenFramebuffer(int theWidth, int theHeight) {
   assert(internal_->offscreenFBO && internal_->glContext);
 
   if (internal_->needToResizeFBO ||
@@ -409,7 +432,7 @@ bool GlfwOcctView::resizeOffscreenFramebuffer(int theWidth, int theHeight) {
   return false;
 }
 
-void GlfwOcctView::initGui() {
+void OcctRenderClient::initGui() {
   IMGUI_CHECKVERSION();
   ImGui::CreateContext();
 
@@ -421,7 +444,7 @@ void GlfwOcctView::initGui() {
   ImGui::GetIO().ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;
 }
 
-void GlfwOcctView::renderGui() {
+void OcctRenderClient::renderGui() {
   ImGuiIO &aIO = ImGui::GetIO();
 
   ImGui_ImplOpenGL3_NewFrame();
@@ -622,17 +645,79 @@ void GlfwOcctView::renderGui() {
 
   // gRPC Control Panel Window
   if (internal_->showGrpcControlPanel && ImGui::Begin("gRPC Control Panel", &internal_->showGrpcControlPanel)) {
-    // Connection status
-    bool isConnected = internal_->geometryClient && internal_->geometryClient->IsConnected();
-    ImGui::Text("Connection: %s", isConnected ? "Connected" : "Disconnected");
+    // Connection status display
+    ImGui::Text("Server: localhost:50051");
     
-    if (!isConnected && ImGui::Button("Reconnect")) {
-      spdlog::info("gRPC Control Panel: User clicked Reconnect button");
-      if (internal_->geometryClient) {
-        spdlog::info("gRPC Control Panel: Attempting to reconnect to server");
-        internal_->geometryClient->Connect();
-      } else {
-        spdlog::warn("gRPC Control Panel: geometryClient is null, cannot reconnect");
+    // Check actual connection status
+    bool isConnected = internal_->geometryClient && internal_->geometryClient->IsConnected();
+    
+    // Update internal connection status based on actual state
+    if (isConnected && internal_->connectionStatus != ViewInternal::ConnectionStatus::Connected) {
+      internal_->connectionStatus = ViewInternal::ConnectionStatus::Connected;
+    } else if (!isConnected && internal_->connectionStatus == ViewInternal::ConnectionStatus::Connected) {
+      internal_->connectionStatus = ViewInternal::ConnectionStatus::Disconnected;
+      internal_->connectionErrorMessage = "Connection lost";
+    }
+    
+    // Display connection status with color coding
+    const char* statusText = "Unknown";
+    ImVec4 statusColor = ImVec4(0.5f, 0.5f, 0.5f, 1.0f); // Gray
+    
+    switch (internal_->connectionStatus) {
+      case ViewInternal::ConnectionStatus::Connected:
+        statusText = "Connected";
+        statusColor = ImVec4(0.0f, 1.0f, 0.0f, 1.0f); // Green
+        break;
+      case ViewInternal::ConnectionStatus::Connecting:
+        statusText = "Connecting...";
+        statusColor = ImVec4(1.0f, 1.0f, 0.0f, 1.0f); // Yellow
+        break;
+      case ViewInternal::ConnectionStatus::Disconnected:
+        statusText = "Disconnected";
+        statusColor = ImVec4(1.0f, 0.5f, 0.0f, 1.0f); // Orange
+        break;
+      case ViewInternal::ConnectionStatus::Error:
+        statusText = "Error";
+        statusColor = ImVec4(1.0f, 0.0f, 0.0f, 1.0f); // Red
+        break;
+    }
+    
+    ImGui::TextColored(statusColor, "Status: %s", statusText);
+    
+    // Show error message if any
+    if (!internal_->connectionErrorMessage.empty() && internal_->connectionStatus != ViewInternal::ConnectionStatus::Connected) {
+      ImGui::TextWrapped("Error: %s", internal_->connectionErrorMessage.c_str());
+    }
+    
+    // Connection management buttons
+    if (!isConnected) {
+      // Auto-reconnect logic
+      float current_time = static_cast<float>(glfwGetTime());
+      float time_since_last_attempt = current_time - internal_->lastConnectionAttemptTime;
+      
+      // Show manual reconnect button or auto-reconnect status
+      if (ImGui::Button("Connect to Server")) {
+        spdlog::info("gRPC Control Panel: User requested manual connection");
+        startAsyncConnection();
+      }
+      
+      // Show time until next auto-reconnect attempt
+      if (internal_->connectionStatus == ViewInternal::ConnectionStatus::Disconnected || 
+          internal_->connectionStatus == ViewInternal::ConnectionStatus::Error) {
+        float time_until_retry = internal_->RECONNECT_INTERVAL - time_since_last_attempt;
+        if (time_until_retry > 0) {
+          ImGui::TextDisabled("Auto-reconnect in %.1fs", time_until_retry);
+        } else {
+          // Attempt auto-reconnect
+          ImGui::TextDisabled("Attempting auto-reconnect...");
+          startAsyncConnection();
+        }
+      }
+    } else {
+      if (ImGui::Button("Disconnect")) {
+        spdlog::info("gRPC Control Panel: User requested disconnection");
+        shutdownGeometryClient();
+        internal_->connectionStatus = ViewInternal::ConnectionStatus::Disconnected;
       }
     }
     
@@ -703,18 +788,37 @@ void GlfwOcctView::renderGui() {
       
       ImGui::Separator();
       
-      // Server statistics
-      try {
-        auto system_info = internal_->geometryClient->GetSystemInfo();
-        ImGui::Text("Server Statistics");
-        ImGui::Text("Active Shapes: %d", system_info.active_shapes);
-        ImGui::Text("Server Version: %s", system_info.version.c_str());
-      } catch (const std::exception& e) {
-        spdlog::warn("gRPC Control Panel: Error retrieving server statistics: {}", e.what());
-        ImGui::Text("Server Statistics: Error retrieving info");
-      } catch (...) {
-        spdlog::warn("gRPC Control Panel: Unknown error retrieving server statistics");
-        ImGui::Text("Server Statistics: Error retrieving info");
+      // Server statistics with caching to avoid excessive network calls
+      float current_time = static_cast<float>(glfwGetTime());
+      bool should_update = !internal_->hasValidSystemInfo || 
+                          (current_time - internal_->lastSystemInfoUpdateTime) >= internal_->SYSTEM_INFO_UPDATE_INTERVAL;
+      
+      if (should_update && internal_->geometryClient && internal_->geometryClient->IsConnected()) {
+        try {
+          internal_->cachedSystemInfo = internal_->geometryClient->GetSystemInfo();
+          internal_->lastSystemInfoUpdateTime = current_time;
+          internal_->hasValidSystemInfo = true;
+        } catch (const std::exception& e) {
+          spdlog::debug("gRPC Control Panel: Error updating server statistics: {}", e.what());
+          internal_->hasValidSystemInfo = false;
+        } catch (...) {
+          spdlog::debug("gRPC Control Panel: Unknown error updating server statistics");
+          internal_->hasValidSystemInfo = false;
+        }
+      }
+      
+      // Display cached system info
+      ImGui::Text("Server Statistics");
+      if (internal_->hasValidSystemInfo) {
+        ImGui::Text("Active Shapes: %d", internal_->cachedSystemInfo.active_shapes);
+        ImGui::Text("Server Version: %s", internal_->cachedSystemInfo.version.c_str());
+        ImGui::Text("OCCT Version: %s", internal_->cachedSystemInfo.occt_version.c_str());
+        
+        // Show update indicator
+        float time_since_update = current_time - internal_->lastSystemInfoUpdateTime;
+        ImGui::TextDisabled("(Updated %.1fs ago)", time_since_update);
+      } else {
+        ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.0f, 1.0f), "Server Statistics: Not available");
       }
     }
   }
@@ -838,7 +942,7 @@ void GlfwOcctView::renderGui() {
   glfwSwapBuffers(internal_->glfwWindow);
 }
 
-void GlfwOcctView::initDemoScene() {
+void OcctRenderClient::initDemoScene() {
   if (internal_->context.IsNull()) {
     return;
   }
@@ -848,18 +952,18 @@ void GlfwOcctView::initDemoScene() {
 
   // Try to load demo scene from gRPC server first
   if (internal_->geometryClient && internal_->geometryClient->IsConnected()) {
-    spdlog::info("GlfwOcctView: Loading demo scene from gRPC server...");
+    spdlog::info("OcctRenderClient: Loading demo scene from gRPC server...");
     try {
       createDemoScene(); // This will call gRPC server to create demo scene
-      spdlog::info("GlfwOcctView: gRPC demo scene loaded, also creating local shapes for comparison");
+      spdlog::info("OcctRenderClient: gRPC demo scene loaded, also creating local shapes for comparison");
       // Don't return here - continue to create local shapes as well
     } catch (const std::exception& e) {
-      spdlog::warn("GlfwOcctView: Failed to load gRPC demo scene, falling back to local shapes: {}", e.what());
+      spdlog::warn("OcctRenderClient: Failed to load gRPC demo scene, falling back to local shapes: {}", e.what());
     }
   }
 
   // Create local OCCT shapes
-  spdlog::info("GlfwOcctView: Creating local OCCT demo shapes...");
+  spdlog::info("OcctRenderClient: Creating local OCCT demo shapes...");
   gp_Ax2 anAxis;
   anAxis.SetLocation(gp_Pnt(0.0, 0.0, 0.0));
   Handle(AIS_Shape) aBox =
@@ -888,7 +992,7 @@ void GlfwOcctView::initDemoScene() {
   spdlog::info("OpenGL info: \n{}", aGlInfo.ToCString());
 }
 
-void GlfwOcctView::initV3dViewer() {
+void OcctRenderClient::initV3dViewer() {
   spdlog::info("Initializing OCCT 3D Viewer.");
 
   assert(internal_->occtAspectWindow.IsNull() == false);
@@ -930,12 +1034,12 @@ void GlfwOcctView::initV3dViewer() {
 
   internal_->glContext = aGraphicDriver->GetSharedContext();
   if (internal_->glContext.IsNull()) {
-    spdlog::error("GlfwOcctView: Failed to get OpenGl_Context.");
+    spdlog::error("OcctRenderClient: Failed to get OpenGl_Context.");
     assert(false);
   }
 }
 
-void GlfwOcctView::initAisContext() {
+void OcctRenderClient::initAisContext() {
   spdlog::info("Initializing OCCT AIS Context.");
 
   assert(internal_->viewer.IsNull() == false);
@@ -967,7 +1071,7 @@ void GlfwOcctView::initAisContext() {
     if (this->ViewAnimation()) {
       internal_->viewCube->SetViewAnimation(this->ViewAnimation());
     } else {
-      spdlog::warn("GlfwOcctView: ViewAnimation not available for ViewCube.");
+      spdlog::warn("OcctRenderClient: ViewAnimation not available for ViewCube.");
     }
 
     if (internal_->fixedViewCubeAnimationLoop) {
@@ -981,7 +1085,7 @@ void GlfwOcctView::initAisContext() {
   }
 }
 
-void GlfwOcctView::initVisualSettings() {
+void OcctRenderClient::initVisualSettings() {
   spdlog::info("Initializing OCCT Visual Settings.");
 
   assert(internal_->context.IsNull() == false);
@@ -1045,7 +1149,7 @@ void GlfwOcctView::initVisualSettings() {
                               hilightLocalDrawer);
 }
 
-void GlfwOcctView::mainloop() {
+void OcctRenderClient::mainloop() {
   if (!internal_->glfwWindow)
     return;
 
@@ -1063,8 +1167,8 @@ void GlfwOcctView::mainloop() {
   }
 }
 
-void GlfwOcctView::cleanup() {
-  spdlog::info("GlfwOcctView::cleanup(): Starting cleanup process with improved OpenGL context management");
+void OcctRenderClient::cleanup() {
+  spdlog::info("OcctRenderClient::cleanup(): Starting cleanup process with improved OpenGL context management");
   
   try {
     // Step 1: Early gRPC cleanup to prevent context conflicts
@@ -1075,92 +1179,92 @@ void GlfwOcctView::cleanup() {
     if (internal_->glfwWindow) {
       glfwMakeContextCurrent(internal_->glfwWindow);
       contextValid = (glfwGetCurrentContext() == internal_->glfwWindow);
-      spdlog::info("GlfwOcctView::cleanup(): OpenGL context valid: {}", contextValid);
+      spdlog::info("OcctRenderClient::cleanup(): OpenGL context valid: {}", contextValid);
     }
 
     if (!contextValid) {
-      spdlog::warn("GlfwOcctView::cleanup(): OpenGL context not valid, attempting basic cleanup only");
+      spdlog::warn("OcctRenderClient::cleanup(): OpenGL context not valid, attempting basic cleanup only");
       return;
     }
 
     // Step 3: Clean up OCCT objects in proper order while context is valid
     try {
       if (!internal_->context.IsNull()) {
-        spdlog::debug("GlfwOcctView::cleanup(): Removing all AIS objects");
+        spdlog::debug("OcctRenderClient::cleanup(): Removing all AIS objects");
         internal_->context->RemoveAll(Standard_False);
         internal_->context.Nullify();
       }
     } catch (...) {
-      spdlog::warn("GlfwOcctView::cleanup(): Exception during AIS context cleanup, continuing");
+      spdlog::warn("OcctRenderClient::cleanup(): Exception during AIS context cleanup, continuing");
     }
 
     // Step 4: Release offscreen FBO early while context is guaranteed valid
     try {
       if (!internal_->offscreenFBO.IsNull() && !internal_->glContext.IsNull()) {
-        spdlog::debug("GlfwOcctView::cleanup(): Releasing offscreen FBO");
+        spdlog::debug("OcctRenderClient::cleanup(): Releasing offscreen FBO");
         internal_->offscreenFBO->Release(internal_->glContext.get());
         internal_->offscreenFBO.Nullify();
       }
     } catch (...) {
-      spdlog::warn("GlfwOcctView::cleanup(): Exception during FBO cleanup, continuing");
+      spdlog::warn("OcctRenderClient::cleanup(): Exception during FBO cleanup, continuing");
     }
 
     // Step 5: Clean up OCCT view and viewer
     try {
       if (!internal_->view.IsNull()) {
-        spdlog::debug("GlfwOcctView::cleanup(): Removing OCCT view");
+        spdlog::debug("OcctRenderClient::cleanup(): Removing OCCT view");
         internal_->view->Remove();
         internal_->view.Nullify();
       }
     } catch (...) {
-      spdlog::warn("GlfwOcctView::cleanup(): Exception during view cleanup, continuing");
+      spdlog::warn("OcctRenderClient::cleanup(): Exception during view cleanup, continuing");
     }
 
     try {
       if (!internal_->viewer.IsNull()) {
-        spdlog::debug("GlfwOcctView::cleanup(): Nullifying OCCT viewer");
+        spdlog::debug("OcctRenderClient::cleanup(): Nullifying OCCT viewer");
         internal_->viewer.Nullify();
       }
     } catch (...) {
-      spdlog::warn("GlfwOcctView::cleanup(): Exception during viewer cleanup, continuing");
+      spdlog::warn("OcctRenderClient::cleanup(): Exception during viewer cleanup, continuing");
     }
 
     // Step 6: Clean up ImGui resources
     try {
-      spdlog::debug("GlfwOcctView::cleanup(): Cleaning up ImGui resources");
+      spdlog::debug("OcctRenderClient::cleanup(): Cleaning up ImGui resources");
       if (ImGui::GetCurrentContext()) {
         ImGui_ImplOpenGL3_Shutdown();
         ImGui_ImplGlfw_Shutdown();
         ImGui::DestroyContext();
       }
     } catch (...) {
-      spdlog::warn("GlfwOcctView::cleanup(): Exception during ImGui cleanup, continuing");
+      spdlog::warn("OcctRenderClient::cleanup(): Exception during ImGui cleanup, continuing");
     }
 
     // Step 7: Final cleanup of OCCT window and OpenGL context
     try {
-      spdlog::debug("GlfwOcctView::cleanup(): Final cleanup of OCCT window and OpenGL context");
+      spdlog::debug("OcctRenderClient::cleanup(): Final cleanup of OCCT window and OpenGL context");
       internal_->occtAspectWindow.Nullify();
       internal_->glContext.Nullify();
     } catch (...) {
-      spdlog::warn("GlfwOcctView::cleanup(): Exception during final cleanup, continuing");
+      spdlog::warn("OcctRenderClient::cleanup(): Exception during final cleanup, continuing");
     }
     
-    spdlog::info("GlfwOcctView::cleanup(): Cleanup completed successfully");
+    spdlog::info("OcctRenderClient::cleanup(): Cleanup completed successfully");
     
   } catch (...) {
-    spdlog::warn("GlfwOcctView::cleanup(): Overall exception during cleanup, suppressing for stable shutdown");
+    spdlog::warn("OcctRenderClient::cleanup(): Overall exception during cleanup, suppressing for stable shutdown");
   }
 }
 
-void GlfwOcctView::onResize(int theWidth, int theHeight) {
+void OcctRenderClient::onResize(int theWidth, int theHeight) {
   if (theWidth != 0 && theHeight != 0 && !internal_->view.IsNull()) {
     internal_->view->MustBeResized();
     internal_->view->Invalidate(); // invalidate the whole view
   }
 }
 
-Graphic3d_Vec2i GlfwOcctView::adjustMousePosition(int thePosX,
+Graphic3d_Vec2i OcctRenderClient::adjustMousePosition(int thePosX,
                                                   int thePosY) const {
   if (internal_->renderWindowHasFocus) {
     // In multi-viewport mode, we need to convert coordinates properly
@@ -1189,7 +1293,7 @@ Graphic3d_Vec2i GlfwOcctView::adjustMousePosition(int thePosX,
   return Graphic3d_Vec2i(thePosX, thePosY);
 }
 
-void GlfwOcctView::onMouseButton(int theButton, int theAction, int theMods) {
+void OcctRenderClient::onMouseButton(int theButton, int theAction, int theMods) {
   if (internal_->view.IsNull() || !internal_->renderWindowHasFocus ||
       !internal_->glfwWindow) {
     return;
@@ -1213,7 +1317,7 @@ void GlfwOcctView::onMouseButton(int theButton, int theAction, int theMods) {
   }
 }
 
-void GlfwOcctView::onMouseMove(int thePosX, int thePosY) {
+void OcctRenderClient::onMouseMove(int thePosX, int thePosY) {
   if (internal_->view.IsNull() || !internal_->renderWindowHasFocus) {
     // When we are not in the render window, we need to reset the view input
     // to avoid accumulating mouse movements
@@ -1237,7 +1341,7 @@ void GlfwOcctView::onMouseMove(int thePosX, int thePosY) {
   }
 }
 
-void GlfwOcctView::onMouseScroll(double theOffsetX, double theOffsetY) {
+void OcctRenderClient::onMouseScroll(double theOffsetX, double theOffsetY) {
   if (internal_->view.IsNull() || !internal_->renderWindowHasFocus ||
       !internal_->glfwWindow) {
     return;
@@ -1254,7 +1358,7 @@ void GlfwOcctView::onMouseScroll(double theOffsetX, double theOffsetY) {
 
 // Convert screen coordinates to 3D coordinates in the view
 // copy from mayo: graphics_utils.cpp
-gp_Pnt GlfwOcctView::screenToViewCoordinates(int theX, int theY) const {
+gp_Pnt OcctRenderClient::screenToViewCoordinates(int theX, int theY) const {
   double xEye, yEye, zEye, xAt, yAt, zAt;
   internal_->view->Eye(xEye, yEye, zEye);
   internal_->view->At(xAt, yAt, zAt);
@@ -1275,7 +1379,7 @@ gp_Pnt GlfwOcctView::screenToViewCoordinates(int theX, int theY) const {
                        planeView);
 }
 
-void GlfwOcctView::configureHighlightStyle(const Handle(Prs3d_Drawer) &
+void OcctRenderClient::configureHighlightStyle(const Handle(Prs3d_Drawer) &
                                            theDrawer) {
   Handle(Prs3d_ShadingAspect) shadingAspect = new Prs3d_ShadingAspect();
   shadingAspect->SetColor(internal_->highlightColor);
@@ -1287,7 +1391,7 @@ void GlfwOcctView::configureHighlightStyle(const Handle(Prs3d_Drawer) &
   theDrawer->SetDisplayMode(AIS_Shaded);
 }
 
-Handle(Prs3d_Drawer) GlfwOcctView::getDefaultAISDrawer() {
+Handle(Prs3d_Drawer) OcctRenderClient::getDefaultAISDrawer() {
   // Normal mode drawer
   Handle(Prs3d_ShadingAspect) shadingAspect = new Prs3d_ShadingAspect();
   shadingAspect->SetColor(internal_->faceColor);
@@ -1317,15 +1421,26 @@ Handle(Prs3d_Drawer) GlfwOcctView::getDefaultAISDrawer() {
 }
 
 // gRPC Integration Methods
-bool GlfwOcctView::initGeometryClient() {
-  spdlog::info("GlfwOcctView: Initializing gRPC geometry client with OpenGL context isolation...");
+bool OcctRenderClient::initGeometryClient() {
+  std::lock_guard<std::mutex> lock(internal_->geometryClientMutex);
+  
+  // Check if already connected
+  if (internal_->geometryClient && internal_->geometryClient->IsConnected()) {
+    internal_->connectionStatus = ViewInternal::ConnectionStatus::Connected;
+    return true;
+  }
+  
+  internal_->connectionStatus = ViewInternal::ConnectionStatus::Connecting;
+  internal_->connectionErrorMessage.clear();
   
   try {
     // Save current OpenGL context to restore later
     GLFWwindow* currentContext = glfwGetCurrentContext();
     
-    // Create geometry client without affecting OpenGL context
-    internal_->geometryClient = std::make_unique<GeometryClient>("localhost:50051");
+    // Create geometry client if not exists
+    if (!internal_->geometryClient) {
+      internal_->geometryClient = std::make_unique<GeometryClient>("localhost:50051");
+    }
     
     // Ensure we're back to our OpenGL context before proceeding
     if (currentContext && currentContext == internal_->glfwWindow) {
@@ -1337,32 +1452,88 @@ bool GlfwOcctView::initGeometryClient() {
     try {
       connected = internal_->geometryClient->Connect();
     } catch (const std::exception& e) {
-      spdlog::warn("GlfwOcctView: Exception during gRPC connection: {}", e.what());
+      internal_->connectionErrorMessage = e.what();
       connected = false;
     }
     
     if (connected) {
-      spdlog::info("GlfwOcctView: Successfully connected to geometry server");
+      spdlog::info("OcctRenderClient: Successfully connected to geometry server");
+      internal_->connectionStatus = ViewInternal::ConnectionStatus::Connected;
+      internal_->connectionErrorMessage.clear();
+      internal_->lastConnectionAttemptTime = static_cast<float>(glfwGetTime());
       return true;
     } else {
-      spdlog::warn("GlfwOcctView: Failed to connect to geometry server - continuing without gRPC");
-      internal_->geometryClient.reset(); // Clean up failed client
+      internal_->connectionStatus = ViewInternal::ConnectionStatus::Disconnected;
+      if (internal_->connectionErrorMessage.empty()) {
+        internal_->connectionErrorMessage = "Failed to connect to localhost:50051";
+      }
+      internal_->lastConnectionAttemptTime = static_cast<float>(glfwGetTime());
       return false;
     }
     
   } catch (const std::exception& e) {
-    spdlog::error("GlfwOcctView: Error initializing geometry client: {}", e.what());
-    // Clean up any partially created client
-    internal_->geometryClient.reset();
+    internal_->connectionStatus = ViewInternal::ConnectionStatus::Error;
+    internal_->connectionErrorMessage = e.what();
+    internal_->lastConnectionAttemptTime = static_cast<float>(glfwGetTime());
     return false;
   } catch (...) {
-    spdlog::error("GlfwOcctView: Unknown error initializing geometry client");
-    internal_->geometryClient.reset();
+    internal_->connectionStatus = ViewInternal::ConnectionStatus::Error;
+    internal_->connectionErrorMessage = "Unknown error";
+    internal_->lastConnectionAttemptTime = static_cast<float>(glfwGetTime());
     return false;
   }
 }
 
-void GlfwOcctView::shutdownGeometryClient() {
+void OcctRenderClient::startAsyncConnection() {
+  // Check if already connecting or connected
+  if (internal_->isConnecting.load() || 
+      (internal_->geometryClient && internal_->geometryClient->IsConnected())) {
+    return;
+  }
+  
+  // Set status to connecting
+  internal_->isConnecting.store(true);
+  internal_->connectionStatus = ViewInternal::ConnectionStatus::Connecting;
+  
+  // Launch async connection task
+  internal_->connectionFuture = std::async(std::launch::async, [this]() {
+    bool result = false;
+    
+    try {
+      // Create client if needed
+      if (!internal_->geometryClient) {
+        internal_->geometryClient = std::make_unique<GeometryClient>("localhost:50051");
+      }
+      
+      // Attempt connection
+      result = internal_->geometryClient->Connect();
+      
+      if (result) {
+        internal_->connectionStatus = ViewInternal::ConnectionStatus::Connected;
+        internal_->connectionErrorMessage.clear();
+        spdlog::info("OcctRenderClient: Async connection succeeded");
+      } else {
+        internal_->connectionStatus = ViewInternal::ConnectionStatus::Disconnected;
+        if (internal_->connectionErrorMessage.empty()) {
+          internal_->connectionErrorMessage = "Failed to connect to localhost:50051";
+        }
+        spdlog::debug("OcctRenderClient: Async connection failed");
+      }
+    } catch (const std::exception& e) {
+      internal_->connectionStatus = ViewInternal::ConnectionStatus::Error;
+      internal_->connectionErrorMessage = e.what();
+      spdlog::debug("OcctRenderClient: Async connection error: {}", e.what());
+      result = false;
+    }
+    
+    internal_->isConnecting.store(false);
+    internal_->lastConnectionAttemptTime = static_cast<float>(glfwGetTime());
+    
+    return result;
+  });
+}
+
+void OcctRenderClient::shutdownGeometryClient() {
   std::lock_guard<std::mutex> lock(internal_->geometryClientMutex);
   
   if (!internal_->geometryClient || internal_->isShuttingDown.load()) {
@@ -1371,7 +1542,7 @@ void GlfwOcctView::shutdownGeometryClient() {
   
   internal_->isShuttingDown.store(true);
   
-  spdlog::info("GlfwOcctView: Shutting down gRPC geometry client safely...");
+  spdlog::info("OcctRenderClient: Shutting down gRPC geometry client safely...");
   
   try {
     // Save current OpenGL context
@@ -1393,20 +1564,23 @@ void GlfwOcctView::shutdownGeometryClient() {
       glfwMakeContextCurrent(internal_->glfwWindow);
     }
     
-    spdlog::info("GlfwOcctView: gRPC geometry client shutdown completed");
+    spdlog::info("OcctRenderClient: gRPC geometry client shutdown completed");
     
   } catch (const std::exception& e) {
-    spdlog::warn("GlfwOcctView: Exception during gRPC client shutdown: {}", e.what());
+    spdlog::warn("OcctRenderClient: Exception during gRPC client shutdown: {}", e.what());
     internal_->geometryClient.reset(); // Force cleanup
   } catch (...) {
-    spdlog::warn("GlfwOcctView: Unknown exception during gRPC client shutdown");
+    spdlog::warn("OcctRenderClient: Unknown exception during gRPC client shutdown");
     internal_->geometryClient.reset(); // Force cleanup
   }
+  
+  // Reset the shutting down flag so reconnection is possible
+  internal_->isShuttingDown.store(false);
 }
 
-void GlfwOcctView::createRandomBox() {
+void OcctRenderClient::createRandomBox() {
   if (!internal_->geometryClient || !internal_->geometryClient->IsConnected()) {
-    spdlog::warn("GlfwOcctView::createRandomBox(): Geometry client not connected");
+    spdlog::warn("OcctRenderClient::createRandomBox(): Geometry client not connected");
     return;
   }
   
@@ -1418,7 +1592,7 @@ void GlfwOcctView::createRandomBox() {
   try {
     std::string shape_id = internal_->geometryClient->CreateBox(x, y, z, size, size, size);
     if (!shape_id.empty()) {
-      spdlog::info("GlfwOcctView: Created box with ID: {}", shape_id);
+      spdlog::info("OcctRenderClient: Created box with ID: {}", shape_id);
       // Get mesh data and convert to OCCT shape for display
       auto mesh_data = internal_->geometryClient->GetMeshData(shape_id);
       if (!mesh_data.vertices.empty()) {
@@ -1426,13 +1600,13 @@ void GlfwOcctView::createRandomBox() {
       }
     }
   } catch (const std::exception& e) {
-    spdlog::error("GlfwOcctView::createRandomBox(): Error: {}", e.what());
+    spdlog::error("OcctRenderClient::createRandomBox(): Error: {}", e.what());
   }
 }
 
-void GlfwOcctView::createRandomCone() {
+void OcctRenderClient::createRandomCone() {
   if (!internal_->geometryClient || !internal_->geometryClient->IsConnected()) {
-    spdlog::warn("GlfwOcctView::createRandomCone(): Geometry client not connected");
+    spdlog::warn("OcctRenderClient::createRandomCone(): Geometry client not connected");
     return;
   }
   
@@ -1446,7 +1620,7 @@ void GlfwOcctView::createRandomCone() {
   try {
     std::string shape_id = internal_->geometryClient->CreateCone(x, y, z, base_radius, top_radius, height);
     if (!shape_id.empty()) {
-      spdlog::info("GlfwOcctView: Created cone with ID: {}", shape_id);
+      spdlog::info("OcctRenderClient: Created cone with ID: {}", shape_id);
       // Get mesh data and convert to OCCT shape for display
       auto mesh_data = internal_->geometryClient->GetMeshData(shape_id);
       if (!mesh_data.vertices.empty()) {
@@ -1454,33 +1628,33 @@ void GlfwOcctView::createRandomCone() {
       }
     }
   } catch (const std::exception& e) {
-    spdlog::error("GlfwOcctView::createRandomCone(): Error: {}", e.what());
+    spdlog::error("OcctRenderClient::createRandomCone(): Error: {}", e.what());
   }
 }
 
-void GlfwOcctView::createDemoScene() {
+void OcctRenderClient::createDemoScene() {
   if (!internal_->geometryClient || !internal_->geometryClient->IsConnected()) {
-    spdlog::warn("GlfwOcctView::createDemoScene(): Geometry client not connected");
+    spdlog::warn("OcctRenderClient::createDemoScene(): Geometry client not connected");
     return;
   }
   
   try {
     internal_->geometryClient->CreateDemoScene();
-    spdlog::info("GlfwOcctView: Created demo scene on server");
+    spdlog::info("OcctRenderClient: Created demo scene on server");
     refreshMeshes();
   } catch (const std::exception& e) {
-    spdlog::error("GlfwOcctView::createDemoScene(): Error: {}", e.what());
+    spdlog::error("OcctRenderClient::createDemoScene(): Error: {}", e.what());
   }
 }
 
-void GlfwOcctView::refreshMeshes() {
+void OcctRenderClient::refreshMeshes() {
   if (!internal_->geometryClient || !internal_->geometryClient->IsConnected()) {
-    spdlog::warn("GlfwOcctView::refreshMeshes(): Geometry client not connected");
+    spdlog::warn("OcctRenderClient::refreshMeshes(): Geometry client not connected");
     return;
   }
   
   try {
-    spdlog::info("GlfwOcctView: Refreshing meshes from server...");
+    spdlog::info("OcctRenderClient: Refreshing meshes from server...");
     
     // Clear existing objects
     if (!internal_->context.IsNull()) {
@@ -1495,9 +1669,9 @@ void GlfwOcctView::refreshMeshes() {
         try {
           addMeshAsAisShape(mesh_data);
         } catch (const std::exception& e) {
-          spdlog::warn("GlfwOcctView::refreshMeshes(): Failed to add mesh as AIS shape: {}", e.what());
+          spdlog::warn("OcctRenderClient::refreshMeshes(): Failed to add mesh as AIS shape: {}", e.what());
         } catch (...) {
-          spdlog::warn("GlfwOcctView::refreshMeshes(): Unknown exception when adding mesh");
+          spdlog::warn("OcctRenderClient::refreshMeshes(): Unknown exception when adding mesh");
         }
       }
     }
@@ -1508,13 +1682,13 @@ void GlfwOcctView::refreshMeshes() {
       internal_->view->Redraw();
     }
     
-    spdlog::info("GlfwOcctView: Refreshed {} meshes", all_meshes.size());
+    spdlog::info("OcctRenderClient: Refreshed {} meshes", all_meshes.size());
   } catch (const std::exception& e) {
-    spdlog::error("GlfwOcctView::refreshMeshes(): Error: {}", e.what());
+    spdlog::error("OcctRenderClient::refreshMeshes(): Error: {}", e.what());
   }
 }
 
-void GlfwOcctView::clearAllShapes() {
+void OcctRenderClient::clearAllShapes() {
   try {
     if (internal_->geometryClient && internal_->geometryClient->IsConnected()) {
       internal_->geometryClient->ClearAll();
@@ -1528,9 +1702,9 @@ void GlfwOcctView::clearAllShapes() {
       internal_->view->Redraw();
     }
     
-    spdlog::info("GlfwOcctView: Cleared all shapes");
+    spdlog::info("OcctRenderClient: Cleared all shapes");
   } catch (const std::exception& e) {
-    spdlog::error("GlfwOcctView::clearAllShapes(): Error: {}", e.what());
+    spdlog::error("OcctRenderClient::clearAllShapes(): Error: {}", e.what());
   }
 }
 

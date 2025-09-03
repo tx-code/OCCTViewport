@@ -71,33 +71,33 @@ file(GLOB COMMON_SOURCES
     "src/common/*.h"
 )
 
-# Geometry Service (Server) executable
+# Geometry Server executable
 file(GLOB SERVER_SOURCES 
     "src/server/*.cpp" 
     "src/server/*.h"
 )
 
-add_executable(GeometryService 
-    src/apps/server/server_main.cpp
+add_executable(GeometryServer 
+    src/apps/geometry_server/main.cpp
     ${SERVER_SOURCES}
     ${COMMON_SOURCES}
 )
 
-target_link_libraries(GeometryService
+target_link_libraries(GeometryServer
     PRIVATE
     grpc_proto_lib
     ${OpenCASCADE_LIBRARIES}
     spdlog::spdlog
 )
 
-target_compile_options(GeometryService PRIVATE /utf-8)
+target_compile_options(GeometryServer PRIVATE /utf-8)
 
 # Note: RenderClient temporarily disabled due to glm dependency
 
-# Core sources (3D rendering)
-file(GLOB CORE_SOURCES 
-    "src/core/GlfwOcctView.cpp" 
-    "src/core/GlfwOcctView.h"
+# OCCT client sources (3D rendering)
+file(GLOB OCCT_CLIENT_SOURCES 
+    "src/client/occt/OcctRenderClient.cpp" 
+    "src/client/occt/OcctRenderClient.h"
 )
 
 # Client gRPC sources 
@@ -112,15 +112,15 @@ file(GLOB RENDER_CLIENT_SOURCES
     "src/client/render/*.h"
 )
 
-# Main OCCT ImGui Application with gRPC integration
-add_executable(OcctImgui
-    src/apps/grpc_viewer/main.cpp
-    ${CORE_SOURCES}
+# OCCT Viewer Application with gRPC integration
+add_executable(OcctViewer
+    src/apps/occt_viewer/main.cpp
+    ${OCCT_CLIENT_SOURCES}
     ${COMMON_SOURCES}
     ${GRPC_CLIENT_SOURCES}
 )
 
-target_link_libraries(OcctImgui
+target_link_libraries(OcctViewer
     PRIVATE
     grpc_proto_lib
     ${OpenCASCADE_LIBRARIES}
@@ -129,22 +129,22 @@ target_link_libraries(OcctImgui
     imgui::imgui
 )
 
-target_compile_options(OcctImgui PRIVATE /utf-8)
+target_compile_options(OcctViewer PRIVATE /utf-8)
 
-# Test client executable for debugging
-add_executable(TestClient
+# gRPC Test Client executable for debugging
+add_executable(GrpcTestClient
     tests/test_client.cpp
     ${COMMON_SOURCES}
     ${GRPC_CLIENT_SOURCES}
 )
 
-target_link_libraries(TestClient
+target_link_libraries(GrpcTestClient
     PRIVATE
     grpc_proto_lib
     spdlog::spdlog
 )
 
-target_compile_options(TestClient PRIVATE /utf-8)
+target_compile_options(GrpcTestClient PRIVATE /utf-8)
 
 # Create directories for source organization
 file(MAKE_DIRECTORY ${CMAKE_SOURCE_DIR}/src/common)

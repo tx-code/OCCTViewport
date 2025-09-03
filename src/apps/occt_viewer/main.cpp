@@ -20,13 +20,13 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
 
-#include "../../core/GlfwOcctView.h"
+#include "../../client/occt/OcctRenderClient.h"
 #include <GLFW/glfw3.h>
 #include <iostream>
 #include <stdexcept>
 #include <cstdio>
 
-// GLFW error callback function (can reuse from GlfwOcctView or define a new one)
+// GLFW error callback function (can reuse from OcctRenderClient or define a new one)
 static void glfw_error_callback(int error, const char* description)
 {
     fprintf(stderr, "Glfw Error %d: %s\n", error, description);
@@ -42,7 +42,7 @@ int main(int, char**)
         return EXIT_FAILURE;
     }
 
-    // Set GLFW window hints (similar to those previously in GlfwOcctView::initWindow)
+    // Set GLFW window hints (similar to those previously in OcctRenderClient::initWindow)
     const bool toAskCoreProfile = true;
     if (toAskCoreProfile) {
         glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
@@ -70,26 +70,26 @@ int main(int, char**)
     // Enable VSync (optional)
     glfwSwapInterval(1); 
 
-    // Create GlfwOcctView instance, passing the GLFW window
-    GlfwOcctView anApp(window);
+    // Create OcctRenderClient instance, passing the GLFW window
+    OcctRenderClient anApp(window);
 
     try
     {
-        // Show window before run (previously myOcctWindow->Map() inside GlfwOcctView)
+        // Show window before run (previously myOcctWindow->Map() inside OcctRenderClient)
         glfwShowWindow(window); 
         anApp.run();
     }
     catch (const std::runtime_error& theError)
     {
         std::cerr << "Runtime Error: " << theError.what() << std::endl;
-        // GlfwOcctView::cleanup() no longer handles GLFW window destruction or termination
+        // OcctRenderClient::cleanup() no longer handles GLFW window destruction or termination
     }
     catch (...) // Catch other potential exceptions
     {
         std::cerr << "An unknown error occurred." << std::endl;
     }
     
-    // GlfwOcctView::cleanup() will handle ImGui and OCCT related resource release
+    // OcctRenderClient::cleanup() will handle ImGui and OCCT related resource release
     // But GLFW window destruction and GLFW termination are now controlled by main
 
     glfwDestroyWindow(window);

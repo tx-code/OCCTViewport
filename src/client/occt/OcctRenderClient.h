@@ -20,8 +20,8 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
 
-#ifndef _GlfwOcctView_Header
-#define _GlfwOcctView_Header
+#ifndef _OcctRenderClient_Header
+#define _OcctRenderClient_Header
 
 #include <AIS_InteractiveObject.hxx>
 #include <AIS_ViewController.hxx> // Base class
@@ -44,16 +44,16 @@ class AIS_InteractiveObject;
 class GeometryClient;
 
 // Using protected inheritance because:
-// Public members from AIS_ViewController become protected in GlfwOcctView
+// Public members from AIS_ViewController become protected in OcctRenderClient
 // Prevents external code from directly accessing AIS_ViewController's interface
-// GlfwOcctView can still use these features internally
-class GlfwOcctView : protected AIS_ViewController {
+// OcctRenderClient can still use these features internally
+class OcctRenderClient : protected AIS_ViewController {
 public:
   //! Constructor now takes an existing GLFWwindow.
-  GlfwOcctView(GLFWwindow *aGlfwWindow);
+  OcctRenderClient(GLFWwindow *aGlfwWindow);
 
   //! Destructor.
-  ~GlfwOcctView(); // Definition must be in .cpp where ViewInternal is complete
+  ~OcctRenderClient(); // Definition must be in .cpp where ViewInternal is complete
 
   //! Main application entry point.
   void run();
@@ -61,8 +61,11 @@ public:
   //! Add an ais object to the ais context.
   void addAisObject(const Handle(AIS_InteractiveObject) & theAisObject);
 
-  //! Connect to geometry server and initialize gRPC client
+  //! Connect to geometry server and initialize gRPC client (synchronous)
   bool initGeometryClient();
+  
+  //! Start async connection to geometry server
+  void startAsyncConnection();
 
   //! Safely disconnect gRPC client
   void shutdownGeometryClient();
@@ -131,7 +134,7 @@ private:
   static void errorCallback(int theError, const char *theDescription);
 
   //! Wrapper for glfwGetWindowUserPointer() returning this class instance.
-  static GlfwOcctView *toView(GLFWwindow *theWin);
+  static OcctRenderClient *toView(GLFWwindow *theWin);
 
   //! Window resize callback.
   static void onResizeCallback(GLFWwindow *theWin, int theWidth, int theHeight);
@@ -173,20 +176,20 @@ private:
 
 // Template method implementation
 template<typename MeshDataType>
-void GlfwOcctView::addMeshAsAisShape(const MeshDataType& mesh_data) {
+void OcctRenderClient::addMeshAsAisShape(const MeshDataType& mesh_data) {
   if (mesh_data.vertices.empty() || mesh_data.indices.empty()) {
-    std::cerr << "GlfwOcctView::addMeshAsAisShape(): Empty mesh data" << std::endl;
+    std::cerr << "OcctRenderClient::addMeshAsAisShape(): Empty mesh data" << std::endl;
     return;
   }
   
   // Validate mesh data integrity
   if (mesh_data.vertices.size() % 3 != 0) {
-    std::cerr << "GlfwOcctView::addMeshAsAisShape(): Invalid vertices size: " << mesh_data.vertices.size() << std::endl;
+    std::cerr << "OcctRenderClient::addMeshAsAisShape(): Invalid vertices size: " << mesh_data.vertices.size() << std::endl;
     return;
   }
   
   if (mesh_data.indices.size() % 3 != 0) {
-    std::cerr << "GlfwOcctView::addMeshAsAisShape(): Invalid indices size: " << mesh_data.indices.size() << std::endl;
+    std::cerr << "OcctRenderClient::addMeshAsAisShape(): Invalid indices size: " << mesh_data.indices.size() << std::endl;
     return;
   }
   
@@ -196,7 +199,7 @@ void GlfwOcctView::addMeshAsAisShape(const MeshDataType& mesh_data) {
   // Check for index bounds
   for (size_t i = 0; i < mesh_data.indices.size(); ++i) {
     if (mesh_data.indices[i] >= numVertices || mesh_data.indices[i] < 0) {
-      std::cerr << "GlfwOcctView::addMeshAsAisShape(): Index out of bounds: " << mesh_data.indices[i] 
+      std::cerr << "OcctRenderClient::addMeshAsAisShape(): Index out of bounds: " << mesh_data.indices[i] 
                 << " (max: " << numVertices - 1 << ")" << std::endl;
       return;
     }
@@ -264,12 +267,12 @@ void GlfwOcctView::addMeshAsAisShape(const MeshDataType& mesh_data) {
     addAisObject(ais_triangulation);
     
   } catch (const std::exception& e) {
-    std::cerr << "GlfwOcctView::addMeshAsAisShape(): Standard exception: " << e.what() << std::endl;
+    std::cerr << "OcctRenderClient::addMeshAsAisShape(): Standard exception: " << e.what() << std::endl;
   } catch (const Standard_Failure& e) {
-    std::cerr << "GlfwOcctView::addMeshAsAisShape(): OCCT exception: " << e.GetMessageString() << std::endl;
+    std::cerr << "OcctRenderClient::addMeshAsAisShape(): OCCT exception: " << e.GetMessageString() << std::endl;
   } catch (...) {
-    std::cerr << "GlfwOcctView::addMeshAsAisShape(): Unknown exception caught" << std::endl;
+    std::cerr << "OcctRenderClient::addMeshAsAisShape(): Unknown exception caught" << std::endl;
   }
 }
 
-#endif // _GlfwOcctView_Header
+#endif // _OcctRenderClient_Header

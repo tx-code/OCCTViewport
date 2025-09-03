@@ -4,12 +4,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-This is a distributed OCCT (OpenCASCADE) + GLFW + ImGui application implementing a client-server architecture similar to Autodesk Fusion 360. The geometry computation is separated from rendering through a gRPC-based distributed system, allowing for scalable 3D CAD visualization.
+This is a distributed OCCT (OpenCASCADE) + GLFW + ImGui application with off-screen rendering and gRPC-based client-server architecture. It's a fork of the original OcctImgui project, modified to use off-screen framebuffer rendering and distributed computing for geometry processing. The architecture follows a hybrid model where both client and server use OCCT (not a pure thin client).
 
 The project consists of three main executables:
-1. **GeometryService** - gRPC server handling OCCT geometry operations
-2. **OcctImgui** - Client application with 3D rendering and ImGui interface  
-3. **TestClient** - Command-line tool for testing gRPC communication
+1. **GeometryServer** - gRPC server handling OCCT geometry operations (port 50051)
+2. **OcctViewer** - Client application with OCCT-based 3D rendering and ImGui interface (can run standalone)
+3. **GrpcTestClient** - Command-line tool for testing gRPC communication
 
 ## Build System
 
@@ -30,42 +30,52 @@ The project uses CMake with user presets for configuration:
 **Debug Build:**
 ```bash
 cmake --preset debug
-cmake --build build --config Debug
+cmake --build build/debug --config Debug
 ```
 
 **Release Build:**
 ```bash
 cmake --preset release  
-cmake --build build --config Release
+cmake --build build/release --config Release
 ```
 
-### Running the Distributed System
+**Build Output:**
+- Executables: `build/debug/bin/Debug/` or `build/release/bin/Release/`
+- Libraries: `build/debug/lib/Debug/` or `build/release/lib/Release/`
 
-**IMPORTANT:** Always start the GeometryService server before launching the client.
+**Note:** If you get "could not load cache" error, reconfigure with `cmake --preset debug`
 
-1. **Start the geometry server:**
+## Running the Application
+
+### Standalone Mode
 ```bash
-./build/debug/bin/Debug/GeometryService.exe
+# Run viewer without server (local OCCT shapes only)
+./build/debug/bin/Debug/OcctViewer.exe
 ```
 
-2. **Launch the client application:**
+### Distributed Mode
 ```bash
-./build/debug/bin/Debug/OcctImgui.exe
+# Terminal 1: Start geometry server
+./build/debug/bin/Debug/GeometryServer.exe
+
+# Terminal 2: Start viewer client (auto-connects to localhost:50051)  
+./build/debug/bin/Debug/OcctViewer.exe
 ```
 
-3. **Optional: Test gRPC communication:**
+### Testing gRPC Services
 ```bash
-./build/debug/bin/Debug/TestClient.exe
+# Test with command-line client
+./build/debug/bin/Debug/GrpcTestClient.exe
 ```
 
-**Note:** Only one GeometryService instance can run at a time (binds to port 50051).
+**Note:** Only one GeometryServer instance can run at a time (binds to port 50051). Client will continue in standalone mode if server unavailable.
 
 ## Architecture
 
 ### Distributed System Components
 
-#### 1. GeometryService (Server)
-- **Location:** `src/apps/server/server_main.cpp`
+#### 1. GeometryServer (Server)
+- **Location:** `src/apps/geometry_server/main.cpp`
 - **Implementation:** `src/server/geometry_service_impl.h/.cpp`
 - **Function:** Handles all OCCT geometry operations via gRPC
 - **Port:** 50051 (configurable via command line)
@@ -75,9 +85,9 @@ cmake --build build --config Release
   - Mesh data generation and streaming
   - Demo scene creation
 
-#### 2. OcctImgui (Client)
-- **Location:** `src/apps/grpc_viewer/main.cpp`
-- **Core Component:** `src/core/GlfwOcctView.h/.cpp`
+#### 2. OcctViewer (Client)
+- **Location:** `src/apps/occt_viewer/main.cpp`
+- **Core Component:** `src/client/occt/OcctRenderClient.h/.cpp`
 - **Function:** 3D rendering client with ImGui interface
 - **Features:**
   - Off-screen framebuffer rendering
@@ -85,7 +95,7 @@ cmake --build build --config Release
   - ImGui docking interface with gRPC Control Panel
   - GLFW window management with OpenGL 3.3 core
 
-#### 3. TestClient
+#### 3. GrpcTestClient
 - **Location:** `tests/test_client.cpp`
 - **Function:** Command-line tool for debugging gRPC communication
 - **Output:** Detailed mesh data statistics and connectivity testing
@@ -107,7 +117,7 @@ cmake --build build --config Release
 
 - **Client-Server Architecture**: Separates geometry computation from rendering
 - **gRPC Streaming**: Efficient transmission of large mesh datasets
-- **PIMPL Idiom**: GlfwOcctView uses `ViewInternal` struct for implementation hiding
+- **PIMPL Idiom**: OcctRenderClient uses `ViewInternal` struct for implementation hiding
 - **Protected Inheritance**: Inherits from AIS_ViewController for OCCT integration
 - **Off-screen Rendering**: Framebuffer-based rendering displayed in ImGui textures
 
@@ -116,10 +126,11 @@ cmake --build build --config Release
 ```
 src/
 ├── apps/
-│   ├── grpc_viewer/main.cpp     # Client application entry point
-│   └── server/server_main.cpp   # Server application entry point
-├── core/
-│   ├── GlfwOcctView.h/.cpp     # Main 3D rendering component
+│   ├── occt_viewer/main.cpp    # OCCT viewer client entry point
+│   └── geometry_server/main.cpp # Geometry server entry point
+├── client/
+│   ├── occt/
+│   │   ├── OcctRenderClient.h/.cpp  # OCCT-based rendering client
 ├── client/
 │   └── grpc/
 │       ├── geometry_client.h/.cpp  # gRPC client implementation
@@ -191,5 +202,47 @@ All control panel operations include detailed logging for debugging.
 
 - **Streaming**: Large mesh datasets use gRPC streaming for efficiency
 - **Caching**: Client caches mesh data to minimize server requests  
-- **Concurrent Operations**: Server can handle multiple geometry operations
+- **Network Optimization**: GetSystemInfo calls cached at 1-second intervals to reduce overhead from 60+ calls/second
 - **Memory Management**: Proper cleanup of OCCT objects and gRPC resources
+
+## Development Notes
+
+### Connection Management
+- Client implements async connection using `std::async` to prevent UI freezing during server connection attempts  
+- Auto-reconnect attempts every 10 seconds when disconnected with proper timeout handling
+- Connection status displayed in gRPC Control Panel (Connected, Connecting, Disconnected, Error states)
+- Proper null pointer checks prevent crashes when accessing geometry client after disconnect
+
+### Adding AIS Objects
+Use `OcctRenderClient::addAisObject()` to add 3D objects to the scene.
+
+### Viewport Interaction
+- Mouse position adjustment handled by `adjustMousePosition()` 
+- Supports standard OCCT navigation (pan, zoom, rotate)
+- Event callbacks route through static GLFW functions to instance methods
+
+### gRPC Service Extensions
+To add new geometry operations:
+1. Define message types in `proto/geometry_types.proto`
+2. Add service methods in `proto/geometry_service.proto`  
+3. Implement server-side in `geometry_service_impl.cpp`
+4. Add client methods in `geometry_client.cpp`
+5. Regenerate protobuf/gRPC code by rebuilding
+
+### Rendering Pipeline
+1. Off-screen rendering to framebuffer (FBO)
+2. ImGui displays framebuffer texture in viewport
+3. GLFW handles window management and input events
+4. OCCT components initialized in order: rendering system → V3d viewer → AIS context → visual settings → framebuffer
+
+## Common Issues
+
+### Connection Failures
+- Ensure GeometryServer is running on port 50051
+- Check firewall settings if connecting across network
+- Client will continue in standalone mode if server unavailable
+
+### Build Errors
+- If "could not load cache" error: run `cmake --preset debug` to reconfigure
+- Ensure all vcpkg dependencies are installed
+- Check that C++20 standard is enabled
