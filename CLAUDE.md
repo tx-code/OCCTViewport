@@ -4,7 +4,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-This is a streamlined OCCT (OpenCASCADE) + GLFW + ImGui application that demonstrates 3D CAD visualization with off-screen rendering. It's a fork of the original OcctImgui project, modified to use off-screen rendering methods instead of direct window rendering. The codebase focuses purely on OCCT rendering capabilities without additional framework dependencies.
+This is a distributed OCCT (OpenCASCADE) + GLFW + ImGui application implementing a client-server architecture similar to Autodesk Fusion 360. The geometry computation is separated from rendering through a gRPC-based distributed system, allowing for scalable 3D CAD visualization.
+
+The project consists of three main executables:
+1. **GeometryService** - gRPC server handling OCCT geometry operations
+2. **OcctImgui** - Client application with 3D rendering and ImGui interface  
+3. **TestClient** - Command-line tool for testing gRPC communication
 
 ## Build System
 
@@ -16,7 +21,7 @@ This is a streamlined OCCT (OpenCASCADE) + GLFW + ImGui application that demonst
 
 ### Required Dependencies (via vcpkg)
 ```bash
-vcpkg install imgui glfw3 opencascade spdlog
+vcpkg install imgui glfw3 opencascade spdlog protobuf grpc
 ```
 
 ### Build Commands
@@ -34,52 +39,157 @@ cmake --preset release
 cmake --build build --config Release
 ```
 
-The CMake configuration automatically sets:
-- C++20 standard
-- Output directories under `build/bin/` and `build/lib/`
-- Links to OCCT modules: TKernel, TKMath, TKG2d, TKG3d, TKGeomBase, TKGeomAlgo, TKBRep, TKTopAlgo, TKPrim, TKMesh, TKService, TKOpenGl, TKV3d
+### Running the Distributed System
+
+**IMPORTANT:** Always start the GeometryService server before launching the client.
+
+1. **Start the geometry server:**
+```bash
+./build/debug/bin/Debug/GeometryService.exe
+```
+
+2. **Launch the client application:**
+```bash
+./build/debug/bin/Debug/OcctImgui.exe
+```
+
+3. **Optional: Test gRPC communication:**
+```bash
+./build/debug/bin/Debug/TestClient.exe
+```
+
+**Note:** Only one GeometryService instance can run at a time (binds to port 50051).
 
 ## Architecture
 
-### Core Components
+### Distributed System Components
 
-1. **GlfwOcctView** (`GlfwOcctView.h/.cpp`) - Main application class
-   - Inherits from `AIS_ViewController` (protected inheritance)
-   - Manages OCCT rendering system, ImGui integration, and GLFW window events
-   - Implements off-screen framebuffer rendering
-   - Handles mouse/keyboard interaction for 3D viewport manipulation
+#### 1. GeometryService (Server)
+- **Location:** `src/apps/server/server_main.cpp`
+- **Implementation:** `src/server/geometry_service_impl.h/.cpp`
+- **Function:** Handles all OCCT geometry operations via gRPC
+- **Port:** 50051 (configurable via command line)
+- **Features:**
+  - Primitive creation (Box, Cone, Sphere, Cylinder)
+  - Shape management and transformations
+  - Mesh data generation and streaming
+  - Demo scene creation
 
-2. **main.cpp** - Application entry point
-   - Initializes GLFW window with OpenGL 3.3 core profile
-   - Creates and runs GlfwOcctView instance
-   - Handles GLFW lifecycle (creation/destruction)
+#### 2. OcctImgui (Client)
+- **Location:** `src/apps/grpc_viewer/main.cpp`
+- **Core Component:** `src/core/GlfwOcctView.h/.cpp`
+- **Function:** 3D rendering client with ImGui interface
+- **Features:**
+  - Off-screen framebuffer rendering
+  - gRPC client for geometry operations
+  - ImGui docking interface with gRPC Control Panel
+  - GLFW window management with OpenGL 3.3 core
+
+#### 3. TestClient
+- **Location:** `tests/test_client.cpp`
+- **Function:** Command-line tool for debugging gRPC communication
+- **Output:** Detailed mesh data statistics and connectivity testing
+
+### gRPC Protocol Buffers
+
+#### Service Definition (`proto/geometry_service.proto`)
+- **Primitives:** CreateBox, CreateCone, CreateSphere, CreateCylinder
+- **Management:** DeleteShape, TransformShape, SetShapeColor
+- **Data Retrieval:** GetMeshData, GetAllMeshes (streaming)
+- **System:** ClearAll, GetSystemInfo, CreateDemoScene
+
+#### Data Types (`proto/geometry_types.proto`)
+- **Geometry:** Point3D, Vector3D, Transform (4x4 matrix)
+- **Rendering:** MeshData with vertices, normals, indices
+- **Properties:** Color (RGBA), BoundingBox, ShapeProperties
 
 ### Key Design Patterns
 
-- **PIMPL Idiom**: GlfwOcctView uses `ViewInternal` struct to hide implementation details
-- **Protected Inheritance**: Inherits from AIS_ViewController to encapsulate OCCT's viewer functionality
-- **Off-screen Rendering**: Uses framebuffers to render OCCT content, then displays in ImGui texture
+- **Client-Server Architecture**: Separates geometry computation from rendering
+- **gRPC Streaming**: Efficient transmission of large mesh datasets
+- **PIMPL Idiom**: GlfwOcctView uses `ViewInternal` struct for implementation hiding
+- **Protected Inheritance**: Inherits from AIS_ViewController for OCCT integration
+- **Off-screen Rendering**: Framebuffer-based rendering displayed in ImGui textures
 
-### OCCT Integration
+### Directory Structure
 
-The application initializes OCCT components in this order:
-1. OCCT rendering system
-2. V3d viewer
-3. AIS context for interactive objects
-4. Visual settings and highlight styles
-5. Off-screen framebuffer setup
+```
+src/
+├── apps/
+│   ├── grpc_viewer/main.cpp     # Client application entry point
+│   └── server/server_main.cpp   # Server application entry point
+├── core/
+│   ├── GlfwOcctView.h/.cpp     # Main 3D rendering component
+├── client/
+│   └── grpc/
+│       ├── geometry_client.h/.cpp  # gRPC client implementation
+├── server/
+│   ├── geometry_service_impl.h/.cpp  # gRPC server implementation
+├── common/
+│   └── [shared utilities]
+proto/
+├── geometry_service.proto       # gRPC service definition
+└── geometry_types.proto        # Protocol buffer data types
+tests/
+└── test_client.cpp             # gRPC testing utility
+```
 
 ## Development Notes
 
-### Adding AIS Objects
-Use `GlfwOcctView::addAisObject()` to add 3D objects to the scene.
+### gRPC Integration
 
-### Viewport Interaction
-- Mouse position adjustment handled by `adjustMousePosition()` 
-- Supports standard OCCT navigation (pan, zoom, rotate)
-- Event callbacks route through static GLFW functions to instance methods
+The client connects to the server automatically on startup. All geometry operations are performed remotely:
+
+```cpp
+// Create geometry via gRPC
+GeometryClient client("localhost:50051");
+std::string box_id = client.CreateBox(0, 0, 0, 2, 2, 2);
+
+// Retrieve mesh data for rendering
+auto meshes = client.GetAllMeshes();
+```
+
+### Adding New Geometry Operations
+
+1. **Update Protocol Buffers:**
+   - Add new RPC method to `geometry_service.proto`
+   - Add request/response messages if needed
+
+2. **Implement Server Side:**
+   - Add method to `GeometryServiceImpl` class
+   - Implement OCCT geometry creation logic
+
+3. **Implement Client Side:**
+   - Add method to `GeometryClient` class
+   - Update UI controls in `GlfwOcctView` if needed
+
+### ImGui gRPC Control Panel
+
+The client includes a dedicated ImGui panel for gRPC operations:
+- **Create Primitives**: Box, Cone, Sphere, Cylinder with random parameters
+- **Scene Management**: Demo scene creation, clear all shapes
+- **System Info**: Server version, active shapes count, OCCT version
+
+All control panel operations include detailed logging for debugging.
 
 ### Rendering Pipeline
-1. Off-screen rendering to framebuffer
-2. ImGui displays framebuffer texture in viewport
-3. GLFW handles window management and input events
+
+1. **Geometry Creation**: Client sends gRPC requests to server
+2. **Mesh Generation**: Server computes triangulated meshes via OCCT
+3. **Data Transmission**: Mesh data streamed back to client via gRPC
+4. **Off-screen Rendering**: Client renders meshes to framebuffer
+5. **Display**: Framebuffer texture displayed in ImGui viewport
+
+### Error Handling and Logging
+
+- **Server Logging**: Detailed gRPC request/response logging with spdlog
+- **Client Logging**: Operation status and error reporting
+- **Connection Management**: Automatic reconnection and error recovery
+- **OpenGL Context**: Proper initialization order for Windows platform
+
+### Performance Considerations
+
+- **Streaming**: Large mesh datasets use gRPC streaming for efficiency
+- **Caching**: Client caches mesh data to minimize server requests  
+- **Concurrent Operations**: Server can handle multiple geometry operations
+- **Memory Management**: Proper cleanup of OCCT objects and gRPC resources

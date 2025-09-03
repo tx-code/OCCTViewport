@@ -25,15 +25,23 @@
 
 #include <AIS_InteractiveObject.hxx>
 #include <AIS_ViewController.hxx> // Base class
+#include <AIS_Triangulation.hxx>
 #include <Quantity_Color.hxx>     // For Quantity_Color
 #include <gp_Pnt.hxx>
+#include <gp_Dir.hxx>
+#include <Poly_Triangulation.hxx>
+#include <Poly_Triangle.hxx>
+#include <Standard_Failure.hxx>
 #include <memory> // For std::unique_ptr
+#include <iostream> // For std::cerr
 
 // Forward declarations
 struct GLFWwindow;
 class Prs3d_Drawer;
 class AIS_Shape;
 class AIS_InteractiveObject;
+
+class GeometryClient;
 
 // Using protected inheritance because:
 // Public members from AIS_ViewController become protected in GlfwOcctView
@@ -52,6 +60,19 @@ public:
 
   //! Add an ais object to the ais context.
   void addAisObject(const Handle(AIS_InteractiveObject) & theAisObject);
+
+  //! Connect to geometry server and initialize gRPC client
+  bool initGeometryClient();
+
+  //! Safely disconnect gRPC client
+  void shutdownGeometryClient();
+
+  //! Create geometry via gRPC and add to viewer
+  void createRandomBox();
+  void createRandomCone();
+  void createDemoScene();
+  void refreshMeshes();
+  void clearAllShapes();
 
 protected:
   //! Initialize OCCT Rendering System.
@@ -141,9 +162,114 @@ private:
   //! Get the default AIS drawer for nice shape display (shaded with edges)
   Handle(Prs3d_Drawer) getDefaultAISDrawer();
 
+  //! Convert mesh data to AIS_Triangulation and display it
+  template<typename MeshDataType>
+  void addMeshAsAisShape(const MeshDataType& mesh_data);
+
 private:
   struct ViewInternal;
   std::unique_ptr<ViewInternal> internal_;
 };
+
+// Template method implementation
+template<typename MeshDataType>
+void GlfwOcctView::addMeshAsAisShape(const MeshDataType& mesh_data) {
+  if (mesh_data.vertices.empty() || mesh_data.indices.empty()) {
+    std::cerr << "GlfwOcctView::addMeshAsAisShape(): Empty mesh data" << std::endl;
+    return;
+  }
+  
+  // Validate mesh data integrity
+  if (mesh_data.vertices.size() % 3 != 0) {
+    std::cerr << "GlfwOcctView::addMeshAsAisShape(): Invalid vertices size: " << mesh_data.vertices.size() << std::endl;
+    return;
+  }
+  
+  if (mesh_data.indices.size() % 3 != 0) {
+    std::cerr << "GlfwOcctView::addMeshAsAisShape(): Invalid indices size: " << mesh_data.indices.size() << std::endl;
+    return;
+  }
+  
+  const int numVertices = static_cast<int>(mesh_data.vertices.size() / 3);
+  const int numTriangles = static_cast<int>(mesh_data.indices.size() / 3);
+  
+  // Check for index bounds
+  for (size_t i = 0; i < mesh_data.indices.size(); ++i) {
+    if (mesh_data.indices[i] >= numVertices || mesh_data.indices[i] < 0) {
+      std::cerr << "GlfwOcctView::addMeshAsAisShape(): Index out of bounds: " << mesh_data.indices[i] 
+                << " (max: " << numVertices - 1 << ")" << std::endl;
+      return;
+    }
+  }
+  
+  try {
+    // Create triangulation from mesh data with validation
+    Handle(Poly_Triangulation) triangulation = new Poly_Triangulation(
+        numVertices, numTriangles, Standard_True);
+    
+    // Add vertices with bounds checking
+    for (int v = 0; v < numVertices; ++v) {
+      int idx = v * 3;
+      if (idx + 2 < static_cast<int>(mesh_data.vertices.size())) {
+        gp_Pnt point(mesh_data.vertices[idx], mesh_data.vertices[idx+1], mesh_data.vertices[idx+2]);
+        triangulation->SetNode(v + 1, point); // OCCT uses 1-based indexing
+      }
+    }
+    
+    // Add normals if available with bounds checking
+    if (mesh_data.normals.size() == mesh_data.vertices.size()) {
+      for (int v = 0; v < numVertices; ++v) {
+        int idx = v * 3;
+        if (idx + 2 < static_cast<int>(mesh_data.normals.size())) {
+          try {
+            gp_Dir normal(mesh_data.normals[idx], mesh_data.normals[idx+1], mesh_data.normals[idx+2]);
+            triangulation->SetNormal(v + 1, normal); // OCCT uses 1-based indexing
+          } catch (...) {
+            // Skip invalid normals
+          }
+        }
+      }
+    }
+    
+    // Add triangles with bounds checking
+    for (int t = 0; t < numTriangles; ++t) {
+      int idx = t * 3;
+      if (idx + 2 < static_cast<int>(mesh_data.indices.size())) {
+        // Convert from 0-based to 1-based indexing for OCCT
+        int v1 = mesh_data.indices[idx] + 1;
+        int v2 = mesh_data.indices[idx + 1] + 1;
+        int v3 = mesh_data.indices[idx + 2] + 1;
+        
+        // Ensure indices are within valid range
+        if (v1 > 0 && v1 <= numVertices && 
+            v2 > 0 && v2 <= numVertices && 
+            v3 > 0 && v3 <= numVertices) {
+          Poly_Triangle triangle(v1, v2, v3);
+          triangulation->SetTriangle(t + 1, triangle); // OCCT uses 1-based indexing
+        }
+      }
+    }
+    
+    // Create AIS_Triangulation object
+    Handle(AIS_Triangulation) ais_triangulation = new AIS_Triangulation(triangulation);
+    
+    // Set color with bounds checking
+    if (sizeof(mesh_data.color) >= 4 * sizeof(float)) {
+      Quantity_Color color(mesh_data.color[0], mesh_data.color[1], mesh_data.color[2], Quantity_TOC_RGB);
+      ais_triangulation->SetColor(color);
+      ais_triangulation->SetTransparency(1.0f - mesh_data.color[3]);
+    }
+    
+    // Display the triangulation
+    addAisObject(ais_triangulation);
+    
+  } catch (const std::exception& e) {
+    std::cerr << "GlfwOcctView::addMeshAsAisShape(): Standard exception: " << e.what() << std::endl;
+  } catch (const Standard_Failure& e) {
+    std::cerr << "GlfwOcctView::addMeshAsAisShape(): OCCT exception: " << e.GetMessageString() << std::endl;
+  } catch (...) {
+    std::cerr << "GlfwOcctView::addMeshAsAisShape(): Unknown exception caught" << std::endl;
+  }
+}
 
 #endif // _GlfwOcctView_Header

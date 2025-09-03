@@ -1,0 +1,63 @@
+syntax = "proto3";
+
+package geometry;
+
+// Basic geometric types
+message Point3D {
+  double x = 1;
+  double y = 2;
+  double z = 3;
+}
+
+message Vector3D {
+  double x = 1;
+  double y = 2;
+  double z = 3;
+}
+
+message Color {
+  double r = 1;  // Red component [0,1]
+  double g = 2;  // Green component [0,1]
+  double b = 3;  // Blue component [0,1]
+  double a = 4;  // Alpha component [0,1]
+}
+
+message Transform {
+  // 4x4 transformation matrix stored as row-major order
+  repeated double matrix = 1;  // 16 elements
+}
+
+// Bounding box
+message BoundingBox {
+  Point3D min = 1;
+  Point3D max = 2;
+}
+
+// Triangle representation
+message Triangle {
+  Point3D vertex1 = 1;
+  Point3D vertex2 = 2;
+  Point3D vertex3 = 3;
+  Vector3D normal = 4;
+}
+
+// Mesh data for rendering
+message MeshData {
+  string shape_id = 1;  // Unique identifier for the shape
+  repeated Point3D vertices = 2;
+  repeated Vector3D normals = 3;
+  repeated int32 indices = 4;  // Triangle indices
+  Color color = 5;
+  BoundingBox bounding_box = 6;
+  int64 version = 7;  // Version for incremental updates
+}
+
+// Shape properties
+message ShapeProperties {
+  string shape_id = 1;
+  Transform transform = 2;
+  Color color = 3;
+  bool visible = 4;
+  bool selected = 5;
+  bool highlighted = 6;
+}

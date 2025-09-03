@@ -1,0 +1,140 @@
+syntax = "proto3";
+
+package geometry;
+
+import "geometry_types.proto";
+
+// Geometry service for CAD operations
+service GeometryService {
+  // Primitive creation
+  rpc CreateBox(BoxRequest) returns (ShapeResponse);
+  rpc CreateCone(ConeRequest) returns (ShapeResponse);
+  rpc CreateSphere(SphereRequest) returns (ShapeResponse);
+  rpc CreateCylinder(CylinderRequest) returns (ShapeResponse);
+  
+  // Shape operations
+  rpc DeleteShape(ShapeRequest) returns (StatusResponse);
+  rpc TransformShape(TransformRequest) returns (ShapeResponse);
+  rpc SetShapeColor(ColorRequest) returns (StatusResponse);
+  
+  // Mesh data retrieval
+  rpc GetMeshData(ShapeRequest) returns (MeshData);
+  rpc GetAllMeshes(EmptyRequest) returns (stream MeshData);
+  
+  // Shape query
+  rpc ListShapes(EmptyRequest) returns (ShapeListResponse);
+  rpc GetShapeProperties(ShapeRequest) returns (ShapeProperties);
+  
+  // Real-time updates
+  rpc Subscribe(stream ClientEvent) returns (stream ServerEvent);
+  
+  // System operations
+  rpc ClearAll(EmptyRequest) returns (StatusResponse);
+  rpc GetSystemInfo(EmptyRequest) returns (SystemInfoResponse);
+  rpc CreateDemoScene(EmptyRequest) returns (StatusResponse);
+}
+
+// Request messages for primitive creation
+message BoxRequest {
+  Point3D position = 1;
+  double width = 2;
+  double height = 3;
+  double depth = 4;
+  Color color = 5;
+}
+
+message ConeRequest {
+  Point3D position = 1;
+  Vector3D axis = 2;
+  double base_radius = 3;
+  double top_radius = 4;
+  double height = 5;
+  Color color = 6;
+}
+
+message SphereRequest {
+  Point3D center = 1;
+  double radius = 2;
+  Color color = 3;
+}
+
+message CylinderRequest {
+  Point3D position = 1;
+  Vector3D axis = 2;
+  double radius = 3;
+  double height = 4;
+  Color color = 5;
+}
+
+// Generic request messages
+message ShapeRequest {
+  string shape_id = 1;
+}
+
+message TransformRequest {
+  string shape_id = 1;
+  Transform transform = 2;
+}
+
+message ColorRequest {
+  string shape_id = 1;
+  Color color = 2;
+}
+
+message EmptyRequest {
+  // Empty request for parameterless operations
+}
+
+// Response messages
+message ShapeResponse {
+  string shape_id = 1;
+  bool success = 2;
+  string message = 3;
+  ShapeProperties properties = 4;
+}
+
+message StatusResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+message ShapeListResponse {
+  repeated string shape_ids = 1;
+  int32 total_count = 2;
+}
+
+message SystemInfoResponse {
+  string version = 1;
+  int32 active_shapes = 2;
+  string occt_version = 3;
+}
+
+// Event system for real-time updates
+message ClientEvent {
+  enum EventType {
+    UNKNOWN = 0;
+    MOUSE_MOVE = 1;
+    MOUSE_CLICK = 2;
+    KEYBOARD = 3;
+    VIEWPORT_CHANGE = 4;
+  }
+  
+  EventType type = 1;
+  Point3D position = 2;  // For mouse events
+  string data = 3;       // Additional event data
+}
+
+message ServerEvent {
+  enum EventType {
+    UNKNOWN = 0;
+    SHAPE_CREATED = 1;
+    SHAPE_UPDATED = 2;
+    SHAPE_DELETED = 3;
+    MESH_UPDATED = 4;
+  }
+  
+  EventType type = 1;
+  string shape_id = 2;
+  MeshData mesh_data = 3;
+  string message = 4;
+}
