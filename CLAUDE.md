@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-This is an OCCT (OpenCASCADE) + GLFW + ImGui application that demonstrates 3D CAD visualization with off-screen rendering. It's a fork of the original OcctImgui project, modified to use off-screen rendering methods instead of direct window rendering.
+This is a streamlined OCCT (OpenCASCADE) + GLFW + ImGui application that demonstrates 3D CAD visualization with off-screen rendering. It's a fork of the original OcctImgui project, modified to use off-screen rendering methods instead of direct window rendering. The codebase focuses purely on OCCT rendering capabilities without additional framework dependencies.
 
 ## Build System
 

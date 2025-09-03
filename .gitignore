@@ -3,3 +3,7 @@ build/
 .vscode/
 .claude/
 CMakeUserPresets.json
+
+# Temporary files
+*.bat
+imgui.ini

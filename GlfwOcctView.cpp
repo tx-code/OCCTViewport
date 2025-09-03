@@ -21,7 +21,6 @@
 // SOFTWARE.
 
 #include "GlfwOcctView.h"
-#include "OCAFWidget.h"
 
 // ImGui
 #include <imgui.h>
@@ -141,7 +140,6 @@ struct GlfwOcctView::ViewInternal {
 
   // OCAF Demo Widget
   //! OCAF Demo Widget instance
-  std::unique_ptr<OCAFWidget> ocafWidget;
 };
 
 namespace { // Anonymous namespace for static helper functions from original
@@ -197,7 +195,6 @@ Handle(OpenGl_GraphicDriver)
 GlfwOcctView::GlfwOcctView(GLFWwindow *aGlfwWindow) {
   internal_ = std::make_unique<ViewInternal>();
   internal_->glfwWindow = aGlfwWindow;
-  internal_->ocafWidget = std::make_unique<OCAFWidget>();
 
   if (!internal_->glfwWindow) {
     Message::DefaultMessenger()->Send(
@@ -570,13 +567,6 @@ void GlfwOcctView::renderGui() {
   }
   ImGui::End();
 
-  // OCAF Demo Window - dockable
-  if (ImGui::Begin("OCAF Demo")) {
-    internal_->ocafWidget->draw(internal_->context,
-                                [this](const Handle(AIS_InteractiveObject) &
-                                       obj) { this->addAisObject(obj); });
-  }
-  ImGui::End();
 
   // OCCT Viewport Window - ensure it stays docked
   ImGuiWindowFlags viewport_window_flags = ImGuiWindowFlags_NoCollapse;
