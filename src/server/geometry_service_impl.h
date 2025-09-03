@@ -14,6 +14,12 @@
 #include <AIS_Shape.hxx>
 #include <TopoDS_Shape.hxx>
 #include <V3d_Viewer.hxx>
+// STEP import/export includes
+#include <STEPCAFControl_Reader.hxx>
+#include <STEPCAFControl_Writer.hxx>
+#include <XCAFDoc_DocumentTool.hxx>
+#include <TDocStd_Document.hxx>
+#include <XCAFApp_Application.hxx>
 
 // Standard includes
 #include <grpcpp/grpcpp.h>
@@ -88,6 +94,32 @@ public:
                                const geometry::EmptyRequest* request,
                                geometry::StatusResponse* response) override;
 
+    // STEP file operations
+    grpc::Status ImportStepFile(grpc::ServerContext* context,
+                               const geometry::StepFileRequest* request,
+                               geometry::StepImportResponse* response) override;
+
+    grpc::Status ExportStepFile(grpc::ServerContext* context,
+                               const geometry::StepExportRequest* request,
+                               geometry::StepFileResponse* response) override;
+
+    grpc::Status LoadStepFromData(grpc::ServerContext* context,
+                                 const geometry::StepDataRequest* request,
+                                 geometry::StepImportResponse* response) override;
+
+    // BREP file operations
+    grpc::Status ImportBrepFile(grpc::ServerContext* context,
+                               const geometry::BrepFileRequest* request,
+                               geometry::BrepImportResponse* response) override;
+
+    grpc::Status ExportBrepFile(grpc::ServerContext* context,
+                               const geometry::BrepExportRequest* request,
+                               geometry::BrepFileResponse* response) override;
+
+    grpc::Status LoadBrepFromData(grpc::ServerContext* context,
+                                 const geometry::BrepDataRequest* request,
+                                 geometry::BrepImportResponse* response) override;
+
 private:
     struct ShapeData {
         Handle(AIS_Shape) ais_shape;
@@ -116,6 +148,34 @@ private:
     gp_Pnt fromProtoPoint(const geometry::Point3D& point);
     gp_Vec fromProtoVector(const geometry::Vector3D& vector);
     Quantity_Color fromProtoColor(const geometry::Color& color);
+
+    // STEP file helper methods
+    std::vector<std::string> importStepFileInternal(const std::string& file_path,
+                                                   const geometry::StepImportOptions& options);
+    std::vector<std::string> importStepDataInternal(const std::string& step_data,
+                                                   const std::string& filename,
+                                                   const geometry::StepImportOptions& options);
+    bool exportStepFileInternal(const std::vector<std::string>& shape_ids,
+                               const geometry::StepExportOptions& options,
+                               std::string& step_data,
+                               geometry::StepFileInfo& file_info);
+    geometry::StepFileInfo getStepFileInfo(const std::string& filename,
+                                          const std::string& step_data,
+                                          int shape_count);
+
+    // BREP file helper methods
+    std::vector<std::string> importBrepFileInternal(const std::string& file_path,
+                                                   const geometry::BrepImportOptions& options);
+    std::vector<std::string> importBrepDataInternal(const std::string& brep_data,
+                                                   const std::string& filename,
+                                                   const geometry::BrepImportOptions& options);
+    bool exportBrepFileInternal(const std::vector<std::string>& shape_ids,
+                               const geometry::BrepExportOptions& options,
+                               std::string& brep_data,
+                               geometry::BrepFileInfo& file_info);
+    geometry::BrepFileInfo getBrepFileInfo(const std::string& filename,
+                                          const std::string& brep_data,
+                                          int shape_count);
 
     // Internal data
     std::unordered_map<std::string, ShapeData> shapes_;

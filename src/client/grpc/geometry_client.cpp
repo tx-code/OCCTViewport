@@ -277,6 +277,186 @@ GeometryClient::SystemInfo GeometryClient::GetSystemInfo() {
     return info;
 }
 
+// BREP file operations implementation
+
+GeometryClient::BrepImportResult GeometryClient::ImportBrepFile(
+    const std::string& file_path, bool merge_shapes, bool validate_shapes) {
+    
+    BrepImportResult result;
+    result.success = false;
+    
+    if (!connected_) {
+        result.message = "Not connected to server";
+        spdlog::error("GeometryClient::ImportBrepFile: Not connected to server");
+        return result;
+    }
+    
+    try {
+        geometry::BrepFileRequest request;
+        request.set_file_path(file_path);
+        
+        // Set import options
+        geometry::BrepImportOptions* options = request.mutable_options();
+        options->set_merge_shapes(merge_shapes);
+        options->set_validate_shapes(validate_shapes);
+        
+        geometry::BrepImportResponse response;
+        grpc::ClientContext context;
+        
+        grpc::Status status = stub_->ImportBrepFile(&context, request, &response);
+        
+        if (status.ok()) {
+            result.success = response.success();
+            result.message = response.message();
+            
+            for (int i = 0; i < response.shape_ids_size(); ++i) {
+                result.shape_ids.push_back(response.shape_ids(i));
+            }
+            
+            if (response.has_file_info()) {
+                const auto& file_info = response.file_info();
+                result.file_size = file_info.file_size();
+                result.creation_time = file_info.creation_time();
+                result.format_version = file_info.format_version();
+            }
+            
+            spdlog::info("GeometryClient::ImportBrepFile: {} - Imported {} shapes from {}", 
+                        result.message, result.shape_ids.size(), file_path);
+        } else {
+            result.message = "gRPC call failed: " + status.error_message();
+            spdlog::error("GeometryClient::ImportBrepFile: Failed - {}", status.error_message());
+        }
+        
+    } catch (const std::exception& e) {
+        result.message = "Exception: " + std::string(e.what());
+        spdlog::error("GeometryClient::ImportBrepFile: Exception: {}", e.what());
+    }
+    
+    return result;
+}
+
+GeometryClient::BrepImportResult GeometryClient::LoadBrepFromData(
+    const std::string& brep_data, const std::string& filename, 
+    bool merge_shapes, bool validate_shapes) {
+    
+    BrepImportResult result;
+    result.success = false;
+    
+    if (!connected_) {
+        result.message = "Not connected to server";
+        spdlog::error("GeometryClient::LoadBrepFromData: Not connected to server");
+        return result;
+    }
+    
+    try {
+        geometry::BrepDataRequest request;
+        request.set_brep_data(brep_data);
+        request.set_filename(filename);
+        
+        // Set import options
+        geometry::BrepImportOptions* options = request.mutable_options();
+        options->set_merge_shapes(merge_shapes);
+        options->set_validate_shapes(validate_shapes);
+        
+        geometry::BrepImportResponse response;
+        grpc::ClientContext context;
+        
+        grpc::Status status = stub_->LoadBrepFromData(&context, request, &response);
+        
+        if (status.ok()) {
+            result.success = response.success();
+            result.message = response.message();
+            
+            for (int i = 0; i < response.shape_ids_size(); ++i) {
+                result.shape_ids.push_back(response.shape_ids(i));
+            }
+            
+            if (response.has_file_info()) {
+                const auto& file_info = response.file_info();
+                result.file_size = file_info.file_size();
+                result.creation_time = file_info.creation_time();
+                result.format_version = file_info.format_version();
+            }
+            
+            spdlog::info("GeometryClient::LoadBrepFromData: {} - Loaded {} shapes from data ({})", 
+                        result.message, result.shape_ids.size(), filename);
+        } else {
+            result.message = "gRPC call failed: " + status.error_message();
+            spdlog::error("GeometryClient::LoadBrepFromData: Failed - {}", status.error_message());
+        }
+        
+    } catch (const std::exception& e) {
+        result.message = "Exception: " + std::string(e.what());
+        spdlog::error("GeometryClient::LoadBrepFromData: Exception: {}", e.what());
+    }
+    
+    return result;
+}
+
+GeometryClient::BrepExportResult GeometryClient::ExportBrepFile(
+    const std::vector<std::string>& shape_ids, 
+    bool export_as_compound, bool validate_before_export) {
+    
+    BrepExportResult result;
+    result.success = false;
+    
+    if (!connected_) {
+        result.message = "Not connected to server";
+        spdlog::error("GeometryClient::ExportBrepFile: Not connected to server");
+        return result;
+    }
+    
+    if (shape_ids.empty()) {
+        result.message = "No shapes to export";
+        spdlog::error("GeometryClient::ExportBrepFile: No shapes to export");
+        return result;
+    }
+    
+    try {
+        geometry::BrepExportRequest request;
+        
+        for (const auto& shape_id : shape_ids) {
+            request.add_shape_ids(shape_id);
+        }
+        
+        // Set export options
+        geometry::BrepExportOptions* options = request.mutable_options();
+        options->set_export_as_compound(export_as_compound);
+        options->set_validate_before_export(validate_before_export);
+        
+        geometry::BrepFileResponse response;
+        grpc::ClientContext context;
+        
+        grpc::Status status = stub_->ExportBrepFile(&context, request, &response);
+        
+        if (status.ok()) {
+            result.success = response.success();
+            result.message = response.message();
+            result.brep_data = response.brep_data();
+            result.filename = response.filename();
+            
+            if (response.has_file_info()) {
+                const auto& file_info = response.file_info();
+                result.file_size = file_info.file_size();
+                result.creation_time = file_info.creation_time();
+                result.format_version = file_info.format_version();
+            }
+            
+            spdlog::info("GeometryClient::ExportBrepFile: {} - Exported {} shapes, data size: {} bytes", 
+                        result.message, shape_ids.size(), result.brep_data.size());
+        } else {
+            result.message = "gRPC call failed: " + status.error_message();
+            spdlog::error("GeometryClient::ExportBrepFile: Failed - {}", status.error_message());
+        }
+        
+    } catch (const std::exception& e) {
+        result.message = "Exception: " + std::string(e.what());
+        spdlog::error("GeometryClient::ExportBrepFile: Exception: {}", e.what());
+    }
+    
+    return result;
+}
+
 // Helper methods
 geometry::Point3D GeometryClient::CreatePoint3D(double x, double y, double z) {
     geometry::Point3D point;

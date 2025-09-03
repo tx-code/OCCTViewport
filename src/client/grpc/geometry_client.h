@@ -70,6 +70,32 @@ public:
     
     SystemInfo GetSystemInfo();
     
+    // BREP file operations
+    struct BrepImportResult {
+        bool success;
+        std::string message;
+        std::vector<std::string> shape_ids;
+        int64_t file_size;
+        std::string creation_time;
+        std::string format_version;
+    };
+
+    struct BrepExportResult {
+        bool success;
+        std::string message;
+        std::string brep_data;
+        std::string filename;
+        int64_t file_size;
+        std::string creation_time;
+        std::string format_version;
+    };
+
+    BrepImportResult ImportBrepFile(const std::string& file_path, bool merge_shapes = false, bool validate_shapes = true);
+    BrepImportResult LoadBrepFromData(const std::string& brep_data, const std::string& filename = "data.brep", 
+                                     bool merge_shapes = false, bool validate_shapes = true);
+    BrepExportResult ExportBrepFile(const std::vector<std::string>& shape_ids, bool export_as_compound = false, 
+                                   bool validate_before_export = true);
+
     // Event handling (for future real-time updates)
     using ShapeUpdateCallback = std::function<void(const std::string& shape_id, const MeshData& mesh_data)>;
     void SetShapeUpdateCallback(ShapeUpdateCallback callback);

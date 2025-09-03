@@ -1,6 +1,6 @@
 // MIT License
 //
-// Copyright(c) 2023 Shing Liu
+// Copyright(c) 2025 Xing Tang <tang.xing1@outlook.com>
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files(the "Software"), to deal

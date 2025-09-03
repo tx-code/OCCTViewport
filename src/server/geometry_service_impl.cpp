@@ -21,8 +21,30 @@
 #include <gp_Vec.hxx>
 #include <Poly_Triangle.hxx>
 
+// STEP file includes
+#include <STEPCAFControl_Reader.hxx>
+#include <STEPCAFControl_Writer.hxx>
+#include <XCAFDoc_DocumentTool.hxx>
+#include <TDocStd_Document.hxx>
+#include <XCAFApp_Application.hxx>
+#include <XCAFDoc_ShapeTool.hxx>
+#include <XCAFDoc_ColorTool.hxx>
+#include <TDataStd_Name.hxx>
+#include <TopTools_HSequenceOfShape.hxx>
+#include <BRepBuilderAPI_MakeShape.hxx>
+#include <TCollection_AsciiString.hxx>
+#include <TDF_LabelSequence.hxx>
+
+// BREP file includes
+#include <BRepTools.hxx>
+#include <BRep_Builder.hxx>
+#include <TopoDS_Compound.hxx>
+
 // Standard includes
 #include <sstream>
+#include <fstream>
+#include <chrono>
+#include <iomanip>
 #include <spdlog/spdlog.h>
 
 GeometryServiceImpl::GeometryServiceImpl() {
@@ -562,4 +584,685 @@ geometry::MeshData GeometryServiceImpl::extractMeshData(const std::string& shape
                 shape_id, vertices.size(), indices.size() / 3);
     
     return mesh_data;
+}
+
+// ========== STEP File Operations ==========
+
+grpc::Status GeometryServiceImpl::ImportStepFile(grpc::ServerContext* context,
+                                                 const geometry::StepFileRequest* request,
+                                                 geometry::StepImportResponse* response) {
+    spdlog::info("ImportStepFile: Importing file: {}", request->file_path());
+    
+    try {
+        std::vector<std::string> shape_ids = importStepFileInternal(
+            request->file_path(), request->options());
+        
+        response->set_success(true);
+        response->set_message("STEP file imported successfully");
+        
+        for (const auto& shape_id : shape_ids) {
+            response->add_shape_ids(shape_id);
+        }
+        
+        // Set file info
+        geometry::StepFileInfo file_info = getStepFileInfo(
+            request->file_path(), "", shape_ids.size());
+        *response->mutable_file_info() = file_info;
+        
+        spdlog::info("ImportStepFile: Successfully imported {} shapes from {}", 
+                    shape_ids.size(), request->file_path());
+        
+    } catch (const std::exception& e) {
+        response->set_success(false);
+        response->set_message(std::string("Failed to import STEP file: ") + e.what());
+        spdlog::error("ImportStepFile: Exception: {}", e.what());
+    }
+    
+    return grpc::Status::OK;
+}
+
+grpc::Status GeometryServiceImpl::LoadStepFromData(grpc::ServerContext* context,
+                                                  const geometry::StepDataRequest* request,
+                                                  geometry::StepImportResponse* response) {
+    spdlog::info("LoadStepFromData: Loading STEP data, size: {} bytes", request->step_data().size());
+    
+    try {
+        std::string step_data_str(request->step_data().begin(), request->step_data().end());
+        std::vector<std::string> shape_ids = importStepDataInternal(
+            step_data_str, request->filename(), request->options());
+        
+        response->set_success(true);
+        response->set_message("STEP data loaded successfully");
+        
+        for (const auto& shape_id : shape_ids) {
+            response->add_shape_ids(shape_id);
+        }
+        
+        // Set file info
+        geometry::StepFileInfo file_info = getStepFileInfo(
+            request->filename(), step_data_str, shape_ids.size());
+        *response->mutable_file_info() = file_info;
+        
+        spdlog::info("LoadStepFromData: Successfully loaded {} shapes from data", shape_ids.size());
+        
+    } catch (const std::exception& e) {
+        response->set_success(false);
+        response->set_message(std::string("Failed to load STEP data: ") + e.what());
+        spdlog::error("LoadStepFromData: Exception: {}", e.what());
+    }
+    
+    return grpc::Status::OK;
+}
+
+grpc::Status GeometryServiceImpl::ExportStepFile(grpc::ServerContext* context,
+                                                 const geometry::StepExportRequest* request,
+                                                 geometry::StepFileResponse* response) {
+    spdlog::info("ExportStepFile: Exporting {} shapes", request->shape_ids_size());
+    
+    try {
+        std::vector<std::string> shape_ids;
+        for (int i = 0; i < request->shape_ids_size(); ++i) {
+            shape_ids.push_back(request->shape_ids(i));
+        }
+        
+        std::string step_data;
+        geometry::StepFileInfo file_info;
+        
+        bool success = exportStepFileInternal(shape_ids, request->options(), step_data, file_info);
+        
+        if (success) {
+            response->set_success(true);
+            response->set_message("STEP file exported successfully");
+            response->set_step_data(step_data);
+            response->set_filename(file_info.filename());
+            *response->mutable_file_info() = file_info;
+            
+            spdlog::info("ExportStepFile: Successfully exported {} shapes, size: {} bytes", 
+                        shape_ids.size(), step_data.size());
+        } else {
+            response->set_success(false);
+            response->set_message("Failed to export STEP file");
+        }
+        
+    } catch (const std::exception& e) {
+        response->set_success(false);
+        response->set_message(std::string("Failed to export STEP file: ") + e.what());
+        spdlog::error("ExportStepFile: Exception: {}", e.what());
+    }
+    
+    return grpc::Status::OK;
+}
+
+// ========== STEP File Helper Methods ==========
+
+std::vector<std::string> GeometryServiceImpl::importStepFileInternal(
+    const std::string& file_path, const geometry::StepImportOptions& options) {
+    
+    std::vector<std::string> shape_ids;
+    
+    spdlog::info("importStepFileInternal: Processing file: {}", file_path);
+    
+    // Create XCAF application and document
+    Handle(XCAFApp_Application) app = XCAFApp_Application::GetApplication();
+    Handle(TDocStd_Document) doc;
+    app->NewDocument("MDTV-XCAF", doc);
+    
+    Handle(XCAFDoc_ShapeTool) shape_tool = XCAFDoc_DocumentTool::ShapeTool(doc->Main());
+    Handle(XCAFDoc_ColorTool) color_tool = XCAFDoc_DocumentTool::ColorTool(doc->Main());
+    
+    // Initialize STEP reader
+    STEPCAFControl_Reader reader;
+    
+    // Note: Precision configuration will be added later after confirming OCCT API
+    
+    // Read the file
+    IFSelect_ReturnStatus status = reader.ReadFile(file_path.c_str());
+    if (status != IFSelect_RetDone) {
+        throw std::runtime_error("Failed to read STEP file: " + file_path);
+    }
+    
+    // Transfer to document
+    if (!reader.Transfer(doc)) {
+        throw std::runtime_error("Failed to transfer STEP data to document");
+    }
+    
+    // Get free shapes from the document
+    TDF_LabelSequence shape_labels;
+    shape_tool->GetFreeShapes(shape_labels);
+    
+    spdlog::info("importStepFileInternal: Found {} free shapes", shape_labels.Length());
+    
+    // Process each shape
+    for (int i = 1; i <= shape_labels.Length(); ++i) {
+        TDF_Label shape_label = shape_labels.Value(i);
+        TopoDS_Shape shape = shape_tool->GetShape(shape_label);
+        
+        if (!shape.IsNull()) {
+            // Generate shape ID
+            std::string shape_id = generateShapeId();
+            
+            // Create AIS shape
+            Handle(AIS_Shape) ais_shape = new AIS_Shape(shape);
+            
+            // Set color if available and requested
+            if (options.import_colors() && color_tool->IsSet(shape_label, XCAFDoc_ColorGen)) {
+                Quantity_Color color;
+                if (color_tool->GetColor(shape_label, XCAFDoc_ColorGen, color)) {
+                    ais_shape->SetColor(color);
+                }
+            }
+            
+            // Set name if available and requested
+            if (options.import_names()) {
+                Handle(TDataStd_Name) name_attr;
+                if (shape_label.FindAttribute(TDataStd_Name::GetID(), name_attr)) {
+                    TCollection_ExtendedString name = name_attr->Get();
+                    TCollection_AsciiString ascii_name(name);
+                    spdlog::info("importStepFileInternal: Shape {} has name: {}", 
+                               shape_id, ascii_name.ToCString());
+                }
+            }
+            
+            // Store shape data
+            ShapeData shape_data;
+            shape_data.ais_shape = ais_shape;
+            shape_data.topo_shape = shape;
+            shape_data.shape_id = shape_id;
+            Quantity_Color default_color;
+            ais_shape->Color(default_color);
+            shape_data.color = toProtoColor(default_color);
+            shape_data.visible = true;
+            
+            shapes_[shape_id] = shape_data;
+            
+            // Display in context
+            context_->Display(ais_shape, Standard_False);
+            
+            shape_ids.push_back(shape_id);
+            
+            spdlog::info("importStepFileInternal: Created shape {}", shape_id);
+        }
+    }
+    
+    // Update display
+    context_->UpdateCurrentViewer();
+    
+    app->Close(doc);
+    
+    return shape_ids;
+}
+
+std::vector<std::string> GeometryServiceImpl::importStepDataInternal(
+    const std::string& step_data, const std::string& filename, 
+    const geometry::StepImportOptions& options) {
+    
+    // Write step data to temporary file
+    std::string temp_filename = "temp_" + filename;
+    std::ofstream temp_file(temp_filename, std::ios::binary);
+    if (!temp_file) {
+        throw std::runtime_error("Failed to create temporary file: " + temp_filename);
+    }
+    
+    temp_file.write(step_data.c_str(), step_data.size());
+    temp_file.close();
+    
+    std::vector<std::string> shape_ids;
+    
+    try {
+        // Import from temporary file
+        shape_ids = importStepFileInternal(temp_filename, options);
+        
+        // Clean up temporary file
+        std::remove(temp_filename.c_str());
+        
+    } catch (...) {
+        // Clean up temporary file even on exception
+        std::remove(temp_filename.c_str());
+        throw;
+    }
+    
+    return shape_ids;
+}
+
+bool GeometryServiceImpl::exportStepFileInternal(
+    const std::vector<std::string>& shape_ids,
+    const geometry::StepExportOptions& options,
+    std::string& step_data,
+    geometry::StepFileInfo& file_info) {
+    
+    if (shape_ids.empty()) {
+        throw std::runtime_error("No shapes to export");
+    }
+    
+    spdlog::info("exportStepFileInternal: Exporting {} shapes", shape_ids.size());
+    
+    // Create XCAF application and document
+    Handle(XCAFApp_Application) app = XCAFApp_Application::GetApplication();
+    Handle(TDocStd_Document) doc;
+    app->NewDocument("MDTV-XCAF", doc);
+    
+    Handle(XCAFDoc_ShapeTool) shape_tool = XCAFDoc_DocumentTool::ShapeTool(doc->Main());
+    Handle(XCAFDoc_ColorTool) color_tool = XCAFDoc_DocumentTool::ColorTool(doc->Main());
+    
+    // Add shapes to document
+    int valid_shapes = 0;
+    for (const std::string& shape_id : shape_ids) {
+        auto it = shapes_.find(shape_id);
+        if (it != shapes_.end() && !it->second.topo_shape.IsNull()) {
+            TDF_Label shape_label = shape_tool->AddShape(it->second.topo_shape);
+            
+            // Set color if requested
+            if (options.export_colors()) {
+                Quantity_Color color = fromProtoColor(it->second.color);
+                color_tool->SetColor(shape_label, color, XCAFDoc_ColorGen);
+            }
+            
+            // Set name if requested
+            if (options.export_names()) {
+                Handle(TDataStd_Name) name_attr = TDataStd_Name::Set(shape_label, shape_id.c_str());
+            }
+            
+            valid_shapes++;
+        }
+    }
+    
+    if (valid_shapes == 0) {
+        app->Close(doc);
+        throw std::runtime_error("No valid shapes found for export");
+    }
+    
+    // Initialize STEP writer
+    STEPCAFControl_Writer writer;
+    
+    // Set schema version
+    std::string schema = options.schema_version();
+    if (schema.empty()) {
+        schema = "AP214";
+    }
+    
+    // Set units
+    std::string units = options.units();
+    if (units.empty()) {
+        units = "mm";
+    }
+    
+    // Transfer document to writer
+    if (!writer.Transfer(doc, STEPControl_AsIs)) {
+        app->Close(doc);
+        throw std::runtime_error("Failed to transfer document to STEP writer");
+    }
+    
+    // Write to temporary file
+    std::string temp_filename = "export_temp.step";
+    IFSelect_ReturnStatus status = writer.Write(temp_filename.c_str());
+    
+    if (status != IFSelect_RetDone) {
+        app->Close(doc);
+        std::remove(temp_filename.c_str());
+        throw std::runtime_error("Failed to write STEP file");
+    }
+    
+    // Read temporary file content
+    std::ifstream temp_file(temp_filename, std::ios::binary);
+    if (!temp_file) {
+        app->Close(doc);
+        std::remove(temp_filename.c_str());
+        throw std::runtime_error("Failed to read exported STEP file");
+    }
+    
+    step_data.assign(std::istreambuf_iterator<char>(temp_file),
+                    std::istreambuf_iterator<char>());
+    temp_file.close();
+    
+    // Clean up
+    std::remove(temp_filename.c_str());
+    app->Close(doc);
+    
+    // Set file info
+    file_info.set_filename("export.step");
+    file_info.set_file_size(step_data.size());
+    file_info.set_shape_count(valid_shapes);
+    file_info.set_schema_version(schema);
+    
+    // Set creation time
+    auto now = std::chrono::system_clock::now();
+    auto time_t = std::chrono::system_clock::to_time_t(now);
+    std::stringstream ss;
+    ss << std::put_time(std::gmtime(&time_t), "%Y-%m-%dT%H:%M:%SZ");
+    file_info.set_creation_time(ss.str());
+    
+    spdlog::info("exportStepFileInternal: Successfully exported {} shapes, size: {} bytes", 
+                valid_shapes, step_data.size());
+    
+    return true;
+}
+
+geometry::StepFileInfo GeometryServiceImpl::getStepFileInfo(
+    const std::string& filename, const std::string& step_data, int shape_count) {
+    
+    geometry::StepFileInfo info;
+    info.set_filename(filename);
+    info.set_shape_count(shape_count);
+    
+    if (!step_data.empty()) {
+        info.set_file_size(step_data.size());
+    } else {
+        // Try to get file size from disk
+        std::ifstream file(filename, std::ios::binary | std::ios::ate);
+        if (file) {
+            info.set_file_size(file.tellg());
+        }
+    }
+    
+    // Set creation time
+    auto now = std::chrono::system_clock::now();
+    auto time_t = std::chrono::system_clock::to_time_t(now);
+    std::stringstream ss;
+    ss << std::put_time(std::gmtime(&time_t), "%Y-%m-%dT%H:%M:%SZ");
+    info.set_creation_time(ss.str());
+    
+    info.set_schema_version("AP214");
+    
+    return info;
+}
+
+// BREP file operations implementation
+
+grpc::Status GeometryServiceImpl::ImportBrepFile(grpc::ServerContext* context,
+                                                  const geometry::BrepFileRequest* request,
+                                                  geometry::BrepImportResponse* response) {
+    spdlog::info("ImportBrepFile: Importing file: {}", request->file_path());
+    
+    try {
+        std::vector<std::string> shape_ids = importBrepFileInternal(request->file_path(), request->options());
+        
+        response->set_success(true);
+        response->set_message("BREP file imported successfully");
+        
+        for (const auto& shape_id : shape_ids) {
+            response->add_shape_ids(shape_id);
+        }
+        
+        geometry::BrepFileInfo file_info = getBrepFileInfo(request->file_path(), "", shape_ids.size());
+        *response->mutable_file_info() = file_info;
+        
+        spdlog::info("ImportBrepFile: Successfully imported {} shapes from {}", 
+                    shape_ids.size(), request->file_path());
+        
+    } catch (const std::exception& e) {
+        response->set_success(false);
+        response->set_message(std::string("Failed to import BREP file: ") + e.what());
+        spdlog::error("ImportBrepFile: Exception: {}", e.what());
+    }
+    
+    return grpc::Status::OK;
+}
+
+grpc::Status GeometryServiceImpl::LoadBrepFromData(grpc::ServerContext* context,
+                                                    const geometry::BrepDataRequest* request,
+                                                    geometry::BrepImportResponse* response) {
+    spdlog::info("LoadBrepFromData: Loading BREP data, size: {} bytes", request->brep_data().size());
+    
+    try {
+        std::string brep_data_str(request->brep_data().begin(), request->brep_data().end());
+        std::vector<std::string> shape_ids = importBrepDataInternal(
+            brep_data_str, request->filename(), request->options());
+        
+        response->set_success(true);
+        response->set_message("BREP data loaded successfully");
+        
+        for (const auto& shape_id : shape_ids) {
+            response->add_shape_ids(shape_id);
+        }
+        
+        geometry::BrepFileInfo file_info = getBrepFileInfo(request->filename(), brep_data_str, shape_ids.size());
+        *response->mutable_file_info() = file_info;
+        
+        spdlog::info("LoadBrepFromData: Successfully loaded {} shapes from data", shape_ids.size());
+        
+    } catch (const std::exception& e) {
+        response->set_success(false);
+        response->set_message(std::string("Failed to load BREP data: ") + e.what());
+        spdlog::error("LoadBrepFromData: Exception: {}", e.what());
+    }
+    
+    return grpc::Status::OK;
+}
+
+grpc::Status GeometryServiceImpl::ExportBrepFile(grpc::ServerContext* context,
+                                                  const geometry::BrepExportRequest* request,
+                                                  geometry::BrepFileResponse* response) {
+    spdlog::info("ExportBrepFile: Exporting {} shapes", request->shape_ids_size());
+    
+    try {
+        std::vector<std::string> shape_ids;
+        for (int i = 0; i < request->shape_ids_size(); ++i) {
+            shape_ids.push_back(request->shape_ids(i));
+        }
+        
+        std::string brep_data;
+        geometry::BrepFileInfo file_info;
+        
+        bool success = exportBrepFileInternal(shape_ids, request->options(), brep_data, file_info);
+        
+        if (success) {
+            response->set_success(true);
+            response->set_message("BREP file exported successfully");
+            response->set_brep_data(brep_data);
+            response->set_filename(file_info.filename());
+            *response->mutable_file_info() = file_info;
+            
+            spdlog::info("ExportBrepFile: Successfully exported {} shapes", shape_ids.size());
+        } else {
+            response->set_success(false);
+            response->set_message("Failed to export BREP file");
+            spdlog::error("ExportBrepFile: Export failed");
+        }
+        
+    } catch (const std::exception& e) {
+        response->set_success(false);
+        response->set_message(std::string("Failed to export BREP file: ") + e.what());
+        spdlog::error("ExportBrepFile: Exception: {}", e.what());
+    }
+    
+    return grpc::Status::OK;
+}
+
+// BREP file helper methods implementation
+
+std::vector<std::string> GeometryServiceImpl::importBrepFileInternal(
+    const std::string& file_path, const geometry::BrepImportOptions& options) {
+    
+    std::vector<std::string> shape_ids;
+    
+    BRep_Builder builder;
+    TopoDS_Shape shape;
+    
+    try {
+        BRepTools::Read(shape, file_path.c_str(), builder);
+    } catch (const std::exception& e) {
+        throw std::runtime_error("Failed to read BREP file: " + file_path + " - " + e.what());
+    }
+    
+    if (shape.IsNull()) {
+        throw std::runtime_error("BREP file contains no valid shapes: " + file_path);
+    }
+    
+    // Create AIS shape for visualization
+    Handle(AIS_Shape) ais_shape = new AIS_Shape(shape);
+    ais_shape->SetDisplayMode(AIS_Shaded);
+    
+    // Generate unique ID and store shape data
+    std::string shape_id = generateShapeId();
+    ShapeData shape_data;
+    shape_data.ais_shape = ais_shape;
+    shape_data.topo_shape = shape;
+    shape_data.color = geometry::Color();
+    shape_data.color.set_r(0.7);
+    shape_data.color.set_g(0.7);
+    shape_data.color.set_b(0.9);
+    shape_data.color.set_a(1.0);
+    shape_data.shape_id = shape_id;
+    shape_data.visible = true;
+    
+    shapes_[shape_id] = shape_data;
+    
+    // Add to AIS context for rendering
+    context_->Display(ais_shape, Standard_False);
+    context_->SetColor(ais_shape, Quantity_Color(
+        shape_data.color.r(), shape_data.color.g(), shape_data.color.b(), Quantity_TOC_RGB), Standard_False);
+    
+    shape_ids.push_back(shape_id);
+    
+    spdlog::info("ImportBrepFileInternal: Loaded shape {} from {}", shape_id, file_path);
+    
+    return shape_ids;
+}
+
+std::vector<std::string> GeometryServiceImpl::importBrepDataInternal(
+    const std::string& brep_data, const std::string& filename, const geometry::BrepImportOptions& options) {
+    
+    std::vector<std::string> shape_ids;
+    
+    BRep_Builder builder;
+    TopoDS_Shape shape;
+    
+    std::istringstream stream(brep_data);
+    
+    try {
+        BRepTools::Read(shape, stream, builder);
+    } catch (const std::exception& e) {
+        throw std::runtime_error("Failed to read BREP data from " + filename + " - " + e.what());
+    }
+    
+    if (shape.IsNull()) {
+        throw std::runtime_error("BREP data contains no valid shapes from " + filename);
+    }
+    
+    // Create AIS shape for visualization
+    Handle(AIS_Shape) ais_shape = new AIS_Shape(shape);
+    ais_shape->SetDisplayMode(AIS_Shaded);
+    
+    // Generate unique ID and store shape data
+    std::string shape_id = generateShapeId();
+    ShapeData shape_data;
+    shape_data.ais_shape = ais_shape;
+    shape_data.topo_shape = shape;
+    shape_data.color = geometry::Color();
+    shape_data.color.set_r(0.7);
+    shape_data.color.set_g(0.7);
+    shape_data.color.set_b(0.9);
+    shape_data.color.set_a(1.0);
+    shape_data.shape_id = shape_id;
+    shape_data.visible = true;
+    
+    shapes_[shape_id] = shape_data;
+    
+    // Add to AIS context for rendering
+    context_->Display(ais_shape, Standard_False);
+    context_->SetColor(ais_shape, Quantity_Color(
+        shape_data.color.r(), shape_data.color.g(), shape_data.color.b(), Quantity_TOC_RGB), Standard_False);
+    
+    shape_ids.push_back(shape_id);
+    
+    spdlog::info("ImportBrepDataInternal: Loaded shape {} from data ({})", shape_id, filename);
+    
+    return shape_ids;
+}
+
+bool GeometryServiceImpl::exportBrepFileInternal(const std::vector<std::string>& shape_ids,
+                                                 const geometry::BrepExportOptions& options,
+                                                 std::string& brep_data,
+                                                 geometry::BrepFileInfo& file_info) {
+    
+    if (shape_ids.empty()) {
+        return false;
+    }
+    
+    std::ostringstream stream;
+    
+    if (shape_ids.size() == 1) {
+        // Single shape export
+        auto it = shapes_.find(shape_ids[0]);
+        if (it == shapes_.end()) {
+            spdlog::error("ExportBrepFileInternal: Shape not found: {}", shape_ids[0]);
+            return false;
+        }
+        
+        try {
+            BRepTools::Write(it->second.topo_shape, stream);
+        } catch (const std::exception& e) {
+            spdlog::error("ExportBrepFileInternal: Failed to write shape: {} - {}", shape_ids[0], e.what());
+            return false;
+        }
+    } else {
+        // Multiple shapes export
+        if (options.export_as_compound()) {
+            // Export as compound
+            TopoDS_Compound compound;
+            BRep_Builder builder;
+            builder.MakeCompound(compound);
+            
+            for (const auto& shape_id : shape_ids) {
+                auto it = shapes_.find(shape_id);
+                if (it != shapes_.end()) {
+                    builder.Add(compound, it->second.topo_shape);
+                }
+            }
+            try {
+                BRepTools::Write(compound, stream);
+            } catch (const std::exception& e) {
+                spdlog::error("ExportBrepFileInternal: Failed to write compound - {}", e.what());
+                return false;
+            }
+        } else {
+            // Export first shape only for now (could be extended to export multiple files)
+            auto it = shapes_.find(shape_ids[0]);
+            if (it != shapes_.end()) {
+                try {
+                    BRepTools::Write(it->second.topo_shape, stream);
+                } catch (const std::exception& e) {
+                    spdlog::error("ExportBrepFileInternal: Failed to write first shape: {} - {}", shape_ids[0], e.what());
+                    return false;
+                }
+            }
+        }
+    }
+    
+    brep_data = stream.str();
+    
+    // Generate file info
+    file_info = getBrepFileInfo("exported_shapes.brep", brep_data, shape_ids.size());
+    
+    return true;
+}
+
+geometry::BrepFileInfo GeometryServiceImpl::getBrepFileInfo(
+    const std::string& filename, const std::string& brep_data, int shape_count) {
+    
+    geometry::BrepFileInfo info;
+    info.set_filename(filename);
+    info.set_shape_count(shape_count);
+    
+    if (!brep_data.empty()) {
+        info.set_file_size(brep_data.size());
+    } else {
+        // Try to get file size from disk
+        std::ifstream file(filename, std::ios::binary | std::ios::ate);
+        if (file) {
+            info.set_file_size(file.tellg());
+        }
+    }
+    
+    // Set creation time
+    auto now = std::chrono::system_clock::now();
+    auto time_t = std::chrono::system_clock::to_time_t(now);
+    std::ostringstream ss;
+    ss << std::put_time(std::gmtime(&time_t), "%Y-%m-%dT%H:%M:%SZ");
+    info.set_creation_time(ss.str());
+    
+    // Set BREP format version (OCCT uses different versions)
+    info.set_format_version("OCCT_7.6");
+    
+    return info;
 }
