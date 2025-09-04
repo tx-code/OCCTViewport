@@ -1,47 +1,137 @@
 # OcctImgui
-OpenCASCADE + GLFW + IMGUI Sample.
-This is a fork project of https://github.com/eryar/OcctImgui, here I changed it to off-screen rendering method.
 
-![occt imgui](OCCTViewport.gif "opencascade imgui")
+Distributed OpenCASCADE geometry processing with gRPC and ImGui rendering.
 
-https://tracker.dev.opencascade.org/view.php?id=33485
+This is a fork of [eryar/OcctImgui](https://github.com/eryar/OcctImgui), redesigned with:
+- **Distributed Architecture**: Client-server separation via gRPC
+- **Off-screen Rendering**: Framebuffer-based 3D rendering
+- **Pure Thin Client**: UI controls disabled when disconnected from server
+- **Modern Build System**: CMake presets with vcpkg integration
 
-## OpenCASCADE
-  https://dev.opencascade.org/
-  
-  https://github.com/Open-Cascade-SAS/OCCT
+## Architecture
 
-  Open CASCADE Technology (OCCT) a software
-development platform providing services for 3D surface and solid modeling, CAD 
-data exchange, and visualization. Most of OCCT functionality is available in 
-the form of C++ libraries. OCCT can be best applied in development of software 
-dealing with 3D modeling (CAD), manufacturing / measuring (CAM) or numerical 
-simulation (CAE).
-  
-## IMGUI
-  https://github.com/ocornut/imgui
+The project uses a distributed architecture with three main components:
 
-  Dear ImGui is a bloat-free graphical user interface library for C++. It outputs optimized vertex buffers that you can render anytime in your 3D-pipeline-enabled application. It is fast, portable, renderer agnostic, and self-contained (no external dependencies).
+### 1. GeometryServer
+- gRPC server handling all OCCT geometry operations
+- Provides services for creating, transforming, and managing 3D shapes
+- Runs on port 50051 by default
 
-Dear ImGui is designed to enable fast iterations and to empower programmers to create content creation tools and visualization / debug tools (as opposed to UI for the average end-user). It favors simplicity and productivity toward this goal and lacks certain features commonly found in more high-level libraries.
+### 2. OcctViewer
+- Client application with OCCT-based 3D rendering
+- ImGui interface with gRPC control panel
+- Can run standalone with local shapes or connect to GeometryServer
 
-Dear ImGui is particularly suited to integration in game engines (for tooling), real-time 3D applications, fullscreen applications, embedded applications, or any applications on console platforms where operating system features are non-standard.
+### 3. Testing Framework
+- **Service Tests**: GTest-based unit tests for gRPC services
+- **UI Automation**: ImGui Test Engine for automated UI testing
+- Validates pure thin client behavior (buttons disabled when disconnected)
 
-## GLFW
-  https://github.com/glfw/glfw
+## Dependencies
 
-  GLFW is an Open Source, multi-platform library for OpenGL, OpenGL ES and Vulkan application development. It provides a simple, platform-independent API for creating windows, contexts and surfaces, reading input, handling events, etc.
-
-GLFW natively supports Windows, macOS and Linux and other Unix-like systems. On Linux both X11 and Wayland are supported.
-
-GLFW is licensed under the zlib/libpng license.
+- **OpenCASCADE 7.9.0**: 3D CAD modeling kernel
+- **Dear ImGui 1.91.9**: Immediate mode GUI library
+- **GLFW 3**: Window and OpenGL context management
+- **gRPC 1.71.0**: Remote procedure calls
+- **Protobuf 29.3.0**: Protocol buffers for serialization
+- **spdlog**: Fast C++ logging library
+- **Google Test 1.16.0**: Unit testing framework
 
 ## Build
-Use CMake to build the OCCTImGui with vcpkg, before configuring
-this project you should use vcpkg intall imgui,glfw,opencascade,spdlog and so on.
 
+### Prerequisites
+
+1. Install vcpkg package manager
+2. Install required packages:
+```bash
+vcpkg install imgui[docking-experimental,glfw-binding,opengl3-binding] glfw3 opencascade spdlog protobuf grpc gtest
 ```
-cmake -DCMAKE_CXX_STANDARD=17 -DCMAKE_TOOLCHAIN_FILE=${vcpkg_root}/.../vcpkg.cmake
+
+### Building with CMake Presets
+
+```bash
+# Debug build
+cmake --preset debug
+cmake --build build/debug --config Debug
+
+# Release build  
+cmake --preset release
+cmake --build build/release --config Release
 ```
 
+### Running the Application
 
+#### Standalone Mode
+```bash
+./build/debug/bin/Debug/OcctViewer.exe
+```
+
+#### Distributed Mode
+```bash
+# Terminal 1: Start geometry server
+./build/debug/bin/Debug/GeometryServer.exe
+
+# Terminal 2: Start viewer client
+./build/debug/bin/Debug/OcctViewer.exe
+```
+
+### Running Tests
+
+#### Service Tests
+```bash
+./build/debug/OcctImgui_ServiceTests.exe
+```
+
+#### UI Automation Tests
+```bash
+./build/debug/bin/imgui_test_suite.exe -nogui -nopause occt_imgui
+```
+
+## Features
+
+### gRPC Services
+- **Primitives**: CreateBox, CreateCone, CreateSphere, CreateCylinder
+- **Management**: DeleteShape, TransformShape, SetShapeColor
+- **Data**: GetMeshData, GetAllMeshes (streaming)
+- **System**: ClearAll, GetSystemInfo, CreateDemoScene
+
+### UI Features
+- Dockable ImGui windows
+- gRPC control panel with connection status
+- Real-time 3D viewport with OCCT rendering
+- Performance metrics display
+- Pure thin client mode (all operations disabled when disconnected)
+
+## Technologies
+
+### OpenCASCADE (OCCT)
+Open CASCADE Technology is a software development platform for 3D CAD, CAM, CAE applications. It provides:
+- 3D surface and solid modeling
+- CAD data exchange
+- Visualization capabilities
+
+### Dear ImGui
+Bloat-free immediate mode GUI library for C++. Features:
+- Fast iteration and prototyping
+- Renderer agnostic
+- Perfect for tools and debug interfaces
+
+### GLFW
+Multi-platform library for OpenGL application development:
+- Window and context creation
+- Input handling
+- Event processing
+
+### gRPC
+High-performance RPC framework:
+- Protocol buffers for serialization
+- Streaming support
+- Cross-platform communication
+
+## License
+
+This project follows the original licensing terms. See individual component licenses:
+- OpenCASCADE: LGPL v2.1
+- Dear ImGui: MIT License
+- GLFW: zlib/libpng License
+- gRPC: Apache License 2.0

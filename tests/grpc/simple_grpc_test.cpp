@@ -124,3 +124,132 @@ TEST_F(SimpleGrpcTest, InvalidBrepDataShouldFail) {
     // 应该返回错误状态或者success=false
     EXPECT_TRUE(!status.ok() || !response.success());
 }
+
+// ========== STEP File Tests ==========
+
+// Test STEP export functionality
+TEST_F(SimpleGrpcTest, StepExportShouldWork) {
+    // Create a box first
+    geometry::BoxRequest box_req;
+    box_req.mutable_position()->set_x(0);
+    box_req.mutable_position()->set_y(0);
+    box_req.mutable_position()->set_z(0);
+    box_req.set_width(4);
+    box_req.set_height(4);
+    box_req.set_depth(4);
+    
+    geometry::ShapeResponse box_resp;
+    grpc::ServerContext ctx1;
+    auto status = service_->CreateBox(&ctx1, &box_req, &box_resp);
+    ASSERT_TRUE(status.ok());
+    ASSERT_TRUE(box_resp.success());
+    
+    // Export to STEP
+    geometry::StepExportRequest export_req;
+    export_req.add_shape_ids(box_resp.shape_id());
+    
+    // Set export options
+    auto* options = export_req.mutable_options();
+    options->set_export_colors(true);
+    options->set_export_names(true);
+    options->set_schema_version("AP214");
+    options->set_units("mm");
+    
+    geometry::StepFileResponse export_resp;
+    grpc::ServerContext ctx2;
+    status = service_->ExportStepFile(&ctx2, &export_req, &export_resp);
+    
+    ASSERT_TRUE(status.ok());
+    EXPECT_TRUE(export_resp.success());
+    EXPECT_FALSE(export_resp.step_data().empty());
+    EXPECT_GT(export_resp.file_info().file_size(), 0);
+    EXPECT_EQ(export_resp.file_info().shape_count(), 1);
+    EXPECT_FALSE(export_resp.file_info().creation_time().empty());
+    EXPECT_EQ(export_resp.file_info().schema_version(), "AP214");
+}
+
+// Test STEP export-import round trip
+TEST_F(SimpleGrpcTest, StepExportImportRoundTrip) {
+    // Create multiple shapes
+    std::vector<std::string> original_shape_ids;
+    
+    // Create box
+    geometry::BoxRequest box_req;
+    box_req.mutable_position()->set_x(0);
+    box_req.mutable_position()->set_y(0);
+    box_req.mutable_position()->set_z(0);
+    box_req.set_width(3);
+    box_req.set_height(3);
+    box_req.set_depth(3);
+    
+    geometry::ShapeResponse box_resp;
+    grpc::ServerContext ctx1;
+    service_->CreateBox(&ctx1, &box_req, &box_resp);
+    original_shape_ids.push_back(box_resp.shape_id());
+    
+    // Create sphere  
+    geometry::SphereRequest sphere_req;
+    sphere_req.mutable_center()->set_x(5);
+    sphere_req.mutable_center()->set_y(0);
+    sphere_req.mutable_center()->set_z(0);
+    sphere_req.set_radius(1.5);
+    
+    geometry::ShapeResponse sphere_resp;
+    grpc::ServerContext ctx2;
+    service_->CreateSphere(&ctx2, &sphere_req, &sphere_resp);
+    original_shape_ids.push_back(sphere_resp.shape_id());
+    
+    // Export to STEP
+    geometry::StepExportRequest export_req;
+    for (const auto& id : original_shape_ids) {
+        export_req.add_shape_ids(id);
+    }
+    
+    geometry::StepFileResponse export_resp;
+    grpc::ServerContext ctx3;
+    service_->ExportStepFile(&ctx3, &export_req, &export_resp);
+    
+    ASSERT_TRUE(export_resp.success());
+    std::string step_data = export_resp.step_data();
+    EXPECT_FALSE(step_data.empty());
+    
+    // Clear all shapes
+    geometry::EmptyRequest clear_req;
+    geometry::StatusResponse clear_resp;
+    grpc::ServerContext ctx4;
+    service_->ClearAll(&ctx4, &clear_req, &clear_resp);
+    
+    // Import from STEP data
+    geometry::StepDataRequest import_req;
+    import_req.set_step_data(step_data);
+    import_req.set_filename("round_trip_test.step");
+    
+    // Set import options
+    auto* import_options = import_req.mutable_options();
+    import_options->set_import_colors(true);
+    import_options->set_import_names(true);
+    
+    geometry::StepImportResponse import_resp;
+    grpc::ServerContext ctx5;
+    auto status = service_->LoadStepFromData(&ctx5, &import_req, &import_resp);
+    
+    ASSERT_TRUE(status.ok());
+    EXPECT_TRUE(import_resp.success());
+    EXPECT_EQ(import_resp.shape_ids_size(), original_shape_ids.size());
+    EXPECT_FALSE(import_resp.file_info().creation_time().empty());
+}
+
+// Test invalid STEP data
+TEST_F(SimpleGrpcTest, InvalidStepDataShouldFail) {
+    geometry::StepDataRequest request;
+    request.set_step_data("This is definitely not valid STEP data!");
+    request.set_filename("invalid.step");
+    
+    geometry::StepImportResponse response;
+    grpc::ServerContext ctx;
+    auto status = service_->LoadStepFromData(&ctx, &request, &response);
+    
+    ASSERT_TRUE(status.ok());  // gRPC call succeeds
+    EXPECT_FALSE(response.success());  // But import fails
+    EXPECT_FALSE(response.message().empty());  // Should have error message
+}

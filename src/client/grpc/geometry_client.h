@@ -96,6 +96,49 @@ public:
     BrepExportResult ExportBrepFile(const std::vector<std::string>& shape_ids, bool export_as_compound = false, 
                                    bool validate_before_export = true);
 
+    // STEP file operations
+    struct StepImportOptions {
+        bool import_colors = true;
+        bool import_names = true;
+        bool import_materials = true;
+        double precision = 0.01;
+    };
+
+    struct StepExportOptions {
+        bool export_colors = true;
+        bool export_names = true;
+        bool export_materials = true;
+        std::string schema_version = "AP214";
+        std::string units = "mm";
+    };
+
+    struct StepImportResult {
+        bool success;
+        std::string message;
+        std::vector<std::string> shape_ids;
+        std::string filename;
+        int64_t file_size;
+        int32_t shape_count;
+        std::string schema_version;
+        std::string creation_time;
+    };
+
+    struct StepExportResult {
+        bool success;
+        std::string message;
+        std::string step_data;
+        std::string filename;
+        int64_t file_size;
+        int32_t shape_count;
+        std::string schema_version;
+        std::string creation_time;
+    };
+
+    StepImportResult ImportStepFile(const std::string& file_path, const StepImportOptions& options = {});
+    StepImportResult LoadStepFromData(const std::string& step_data, const std::string& filename = "data.step", 
+                                     const StepImportOptions& options = {});
+    StepExportResult ExportStepFile(const std::vector<std::string>& shape_ids, const StepExportOptions& options = {});
+
     // Event handling (for future real-time updates)
     using ShapeUpdateCallback = std::function<void(const std::string& shape_id, const MeshData& mesh_data)>;
     void SetShapeUpdateCallback(ShapeUpdateCallback callback);

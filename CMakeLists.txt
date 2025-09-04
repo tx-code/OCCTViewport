@@ -44,6 +44,7 @@ endif()
 
 option(BUILD_TESTING "Build unit tests" ON)
 option(BUILD_EXAMPLES "Build example applications" ON)
+option(IMGUI_TEST_ENGINE_ENABLE "Enable ImGui Test Engine for UI automation tests" ON)
 
 ####################################################################################
 # Dependencies
@@ -56,6 +57,10 @@ find_package(glfw3 REQUIRED)
 find_package(OpenGL REQUIRED)
 find_package(spdlog REQUIRED)
 find_package(imgui CONFIG REQUIRED)
+# Extract ImGui version from package or set manually
+if(NOT DEFINED imgui_VERSION)
+    set(imgui_VERSION "1.91.9")  # Version from vcpkg
+endif()
 find_package(Protobuf CONFIG REQUIRED)
 find_package(gRPC CONFIG REQUIRED)
 
@@ -66,6 +71,17 @@ if(BUILD_TESTING)
         message(FATAL_ERROR "Google Test not found. Please install Google Test via vcpkg")
     endif()
     message(STATUS "Found Google Test ${GTest_VERSION}")
+endif()
+
+# ImGui Test Engine (conditional)
+if(IMGUI_TEST_ENGINE_ENABLE)
+    message(STATUS "ImGui Test Engine enabled - using submodule")
+    
+    # Disable test suite apps to prevent conflicts
+    set(IMGUI_TEST_ENGINE_BUILD_TEST_SUITE OFF CACHE BOOL "")
+    set(IMGUI_TEST_ENGINE_BUILD_MINIMAL_APP OFF CACHE BOOL "")
+    
+    add_subdirectory(third_party/imgui_test_engine)
 endif()
 
 ####################################################################################
@@ -231,6 +247,7 @@ target_link_libraries(OcctImgui_Server
         ${OpenCASCADE_LIBRARIES}
 )
 
+
 ####################################################################################
 # Executables
 ####################################################################################
@@ -272,22 +289,20 @@ endif()
 if(BUILD_TESTING)
     enable_testing()
     
-    # Professional gRPC service tests
-    add_executable(OcctImgui_Tests)
+    # GTest-based service tests
+    add_executable(OcctImgui_ServiceTests)
     
-    target_sources(OcctImgui_Tests
+    target_sources(OcctImgui_ServiceTests
         PRIVATE
             tests/grpc/simple_grpc_test.cpp
-            tests/ui/ui_state_test.cpp
-            tests/integration/server_managed_test.cpp
     )
     
-    target_include_directories(OcctImgui_Tests
+    target_include_directories(OcctImgui_ServiceTests
         PRIVATE
             ${CMAKE_CURRENT_SOURCE_DIR}/tests
     )
     
-    target_link_libraries(OcctImgui_Tests
+    target_link_libraries(OcctImgui_ServiceTests
         PRIVATE
             OcctImgui::Server
             OcctImgui::GrpcClient
@@ -295,34 +310,41 @@ if(BUILD_TESTING)
             GTest::gtest
     )
     
+    # ImGui Test Engine UI automation tests are integrated into imgui_test_suite
+    # Run: ./build/debug/bin/imgui_test_suite.exe -nogui -nopause occt_imgui
     
-    # Configure Windows-specific options
+    
+    # Configure Windows-specific options for service tests
     if(WIN32)
-        target_compile_options(OcctImgui_Tests 
+        target_compile_options(OcctImgui_ServiceTests 
             PRIVATE 
             /utf-8
             /bigobj
             /wd4251  # DLL interface warnings
             /wd4275  # DLL base class warnings
         )
-        target_compile_definitions(OcctImgui_Tests
+        target_compile_definitions(OcctImgui_ServiceTests
             PRIVATE
             _CRT_SECURE_NO_WARNINGS
             NOMINMAX
             WIN32_LEAN_AND_MEAN
         )
+        
     endif()
     
-    # Add test discovery
+    # Add test discovery for GTest service tests
     include(GoogleTest)
     
-    gtest_discover_tests(OcctImgui_Tests
+    gtest_discover_tests(OcctImgui_ServiceTests
         WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
         XML_OUTPUT_DIR "${CMAKE_CURRENT_BINARY_DIR}/test_results"
         DISCOVERY_MODE PRE_TEST
     )
     
-    message(STATUS "Configured gRPC Unit Tests (OcctImgui_Tests)")
+    message(STATUS "Configured gRPC Service Tests (OcctImgui_ServiceTests)")
+    if(IMGUI_TEST_ENGINE_ENABLE)
+        message(STATUS "UI Automation Tests integrated into imgui_test_suite")
+    endif()
 else()
     message(STATUS "Unit testing disabled (BUILD_TESTING=OFF)")
 endif()
@@ -372,7 +394,7 @@ if(BUILD_EXAMPLES)
 endif()
 
 if(BUILD_TESTING)
-    configure_target(OcctImgui_Tests)
+    configure_target(OcctImgui_ServiceTests)
 endif()
 
 ####################################################################################
@@ -385,9 +407,13 @@ if(CMAKE_PROJECT_NAME STREQUAL PROJECT_NAME)
     message(STATUS "  Build type:       ${CMAKE_BUILD_TYPE}")
     message(STATUS "  Unit tests:       ${BUILD_TESTING}")
     message(STATUS "  Examples:         ${BUILD_EXAMPLES}")
+    message(STATUS "  UI Test Engine:   ${IMGUI_TEST_ENGINE_ENABLE}")
     message(STATUS "  C++ Standard:     ${CMAKE_CXX_STANDARD}")
     message(STATUS "  Compiler:         ${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION}")
     message(STATUS "  OpenCASCADE:      ${OpenCASCADE_VERSION}")
+    message(STATUS "  Dear ImGui:       ${imgui_VERSION}")
+    message(STATUS "  gRPC:             ${gRPC_VERSION}")
+    message(STATUS "  Protobuf:         ${Protobuf_VERSION}")
     if(BUILD_TESTING)
         message(STATUS "  Google Test:      ${GTest_VERSION}")
     endif()
@@ -396,7 +422,10 @@ if(CMAKE_PROJECT_NAME STREQUAL PROJECT_NAME)
     message(STATUS "  OcctViewer        - OCCT rendering client with gRPC integration")
     message(STATUS "  GeometryServer    - gRPC geometry processing server")
     if(BUILD_TESTING)
-        message(STATUS "  OcctImgui_Tests   - Professional gRPC unit tests")
+        message(STATUS "  OcctImgui_ServiceTests - gRPC service unit tests")
+        if(IMGUI_TEST_ENGINE_ENABLE)
+            message(STATUS "  imgui_test_suite       - ImGui Test Suite with OcctImgui UI tests")
+        endif()
     endif()
     message(STATUS "")
 endif()
