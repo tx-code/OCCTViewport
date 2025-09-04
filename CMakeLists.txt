@@ -310,8 +310,42 @@ if(BUILD_TESTING)
             GTest::gtest
     )
     
-    # ImGui Test Engine UI automation tests are integrated into imgui_test_suite
-    # Run: ./build/debug/bin/imgui_test_suite.exe -nogui -nopause occt_imgui
+    # ImGui Test Engine UI automation tests
+    if(IMGUI_TEST_ENGINE_ENABLE)
+        add_executable(OcctImgui_UITests)
+        
+        target_sources(OcctImgui_UITests
+            PRIVATE
+                tests/ui_automation/occt_imgui_ui_tests.cpp
+        )
+        
+        target_include_directories(OcctImgui_UITests
+            PRIVATE
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests
+        )
+        
+        target_link_libraries(OcctImgui_UITests
+            PRIVATE
+                imgui_test_engine::imgui_test_engine
+        )
+        
+        # Windows-specific settings
+        if(WIN32)
+            target_compile_options(OcctImgui_UITests 
+                PRIVATE 
+                /utf-8
+                /bigobj
+                /wd4251
+                /wd4275
+            )
+            target_compile_definitions(OcctImgui_UITests
+                PRIVATE
+                _CRT_SECURE_NO_WARNINGS
+                NOMINMAX
+                WIN32_LEAN_AND_MEAN
+            )
+        endif()
+    endif()
     
     
     # Configure Windows-specific options for service tests
@@ -343,7 +377,7 @@ if(BUILD_TESTING)
     
     message(STATUS "Configured gRPC Service Tests (OcctImgui_ServiceTests)")
     if(IMGUI_TEST_ENGINE_ENABLE)
-        message(STATUS "UI Automation Tests integrated into imgui_test_suite")
+        message(STATUS "Configured UI Automation Tests (OcctImgui_UITests)")
     endif()
 else()
     message(STATUS "Unit testing disabled (BUILD_TESTING=OFF)")
@@ -395,6 +429,9 @@ endif()
 
 if(BUILD_TESTING)
     configure_target(OcctImgui_ServiceTests)
+    if(IMGUI_TEST_ENGINE_ENABLE)
+        configure_target(OcctImgui_UITests)
+    endif()
 endif()
 
 ####################################################################################
@@ -424,7 +461,7 @@ if(CMAKE_PROJECT_NAME STREQUAL PROJECT_NAME)
     if(BUILD_TESTING)
         message(STATUS "  OcctImgui_ServiceTests - gRPC service unit tests")
         if(IMGUI_TEST_ENGINE_ENABLE)
-            message(STATUS "  imgui_test_suite       - ImGui Test Suite with OcctImgui UI tests")
+            message(STATUS "  OcctImgui_UITests      - Standalone UI automation tests")
         endif()
     endif()
     message(STATUS "")
