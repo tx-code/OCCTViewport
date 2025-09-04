@@ -483,17 +483,75 @@ geometry::Color GeometryClient::CreateColor(double r, double g, double b, double
     return color;
 }
 
-// Placeholder implementations for methods not yet fully implemented
 std::string GeometryClient::CreateSphere(double x, double y, double z, double radius,
                                         double r, double g, double b) {
-    spdlog::warn("GeometryClient::CreateSphere: Not implemented yet");
-    return "";
+    if (!connected_) {
+        spdlog::error("GeometryClient::CreateSphere: Not connected to server");
+        return "";
+    }
+    
+    try {
+        geometry::SphereRequest request;
+        request.mutable_center()->set_x(x);
+        request.mutable_center()->set_y(y);
+        request.mutable_center()->set_z(z);
+        request.set_radius(radius);
+        *request.mutable_color() = CreateColor(r, g, b);
+        
+        geometry::ShapeResponse response;
+        grpc::ClientContext context;
+        
+        grpc::Status status = stub_->CreateSphere(&context, request, &response);
+        
+        if (status.ok() && response.success()) {
+            spdlog::info("GeometryClient::CreateSphere: Created sphere with ID: {}", response.shape_id());
+            return response.shape_id();
+        } else {
+            spdlog::error("GeometryClient::CreateSphere: Failed - {}", 
+                         status.ok() ? response.message() : status.error_message());
+            return "";
+        }
+        
+    } catch (const std::exception& e) {
+        spdlog::error("GeometryClient::CreateSphere: Exception: {}", e.what());
+        return "";
+    }
 }
 
 std::string GeometryClient::CreateCylinder(double x, double y, double z, double radius, double height,
                                           double r, double g, double b) {
-    spdlog::warn("GeometryClient::CreateCylinder: Not implemented yet");
-    return "";
+    if (!connected_) {
+        spdlog::error("GeometryClient::CreateCylinder: Not connected to server");
+        return "";
+    }
+    
+    try {
+        geometry::CylinderRequest request;
+        request.mutable_position()->set_x(x);
+        request.mutable_position()->set_y(y);
+        request.mutable_position()->set_z(z);
+        request.set_radius(radius);
+        request.set_height(height);
+        *request.mutable_color() = CreateColor(r, g, b);
+        
+        geometry::ShapeResponse response;
+        grpc::ClientContext context;
+        
+        grpc::Status status = stub_->CreateCylinder(&context, request, &response);
+        
+        if (status.ok() && response.success()) {
+            spdlog::info("GeometryClient::CreateCylinder: Created cylinder with ID: {}", response.shape_id());
+            return response.shape_id();
+        } else {
+            spdlog::error("GeometryClient::CreateCylinder: Failed - {}", 
+                         status.ok() ? response.message() : status.error_message());
+            return "";
+        }
+        
+    } catch (const std::exception& e) {
+        spdlog::error("GeometryClient::CreateCylinder: Exception: {}", e.what());
+        return "";
+    }
 }
 
 bool GeometryClient::DeleteShape(const std::string& shape_id) {

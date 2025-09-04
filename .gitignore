@@ -7,3 +7,4 @@ CMakeUserPresets.json
 # Temporary files
 *.bat
 imgui.ini
+nul

@@ -266,17 +266,81 @@ grpc::Status GeometryServiceImpl::ListShapes(grpc::ServerContext* context,
 grpc::Status GeometryServiceImpl::CreateSphere(grpc::ServerContext* context,
                                               const geometry::SphereRequest* request,
                                               geometry::ShapeResponse* response) {
-    response->set_success(false);
-    response->set_message("CreateSphere not implemented yet");
-    return grpc::Status::OK;
+    try {
+        spdlog::info("CreateSphere: radius={}", request->radius());
+        
+        std::string shape_id = generateShapeId();
+        Handle(AIS_Shape) ais_shape = createSphereShape(*request);
+        
+        if (ais_shape.IsNull()) {
+            response->set_success(false);
+            response->set_message("Failed to create sphere shape");
+            return grpc::Status::OK;
+        }
+        
+        // Store shape data
+        ShapeData shape_data;
+        shape_data.ais_shape = ais_shape;
+        shape_data.topo_shape = ais_shape->Shape();
+        shape_data.color = request->color();
+        shape_data.shape_id = shape_id;
+        
+        shapes_[shape_id] = std::move(shape_data);
+        
+        // Build response
+        response->set_success(true);
+        response->set_shape_id(shape_id);
+        response->set_message("Sphere created successfully");
+        
+        spdlog::info("CreateSphere: Successfully created sphere with ID: {}", shape_id);
+        return grpc::Status::OK;
+        
+    } catch (const std::exception& e) {
+        spdlog::error("CreateSphere: Exception occurred: {}", e.what());
+        response->set_success(false);
+        response->set_message("Internal server error: " + std::string(e.what()));
+        return grpc::Status::OK;
+    }
 }
 
 grpc::Status GeometryServiceImpl::CreateCylinder(grpc::ServerContext* context,
                                                 const geometry::CylinderRequest* request,
                                                 geometry::ShapeResponse* response) {
-    response->set_success(false);
-    response->set_message("CreateCylinder not implemented yet");
-    return grpc::Status::OK;
+    try {
+        spdlog::info("CreateCylinder: radius={}, height={}", request->radius(), request->height());
+        
+        std::string shape_id = generateShapeId();
+        Handle(AIS_Shape) ais_shape = createCylinderShape(*request);
+        
+        if (ais_shape.IsNull()) {
+            response->set_success(false);
+            response->set_message("Failed to create cylinder shape");
+            return grpc::Status::OK;
+        }
+        
+        // Store shape data
+        ShapeData shape_data;
+        shape_data.ais_shape = ais_shape;
+        shape_data.topo_shape = ais_shape->Shape();
+        shape_data.color = request->color();
+        shape_data.shape_id = shape_id;
+        
+        shapes_[shape_id] = std::move(shape_data);
+        
+        // Build response
+        response->set_success(true);
+        response->set_shape_id(shape_id);
+        response->set_message("Cylinder created successfully");
+        
+        spdlog::info("CreateCylinder: Successfully created cylinder with ID: {}", shape_id);
+        return grpc::Status::OK;
+        
+    } catch (const std::exception& e) {
+        spdlog::error("CreateCylinder: Exception occurred: {}", e.what());
+        response->set_success(false);
+        response->set_message("Internal server error: " + std::string(e.what()));
+        return grpc::Status::OK;
+    }
 }
 
 grpc::Status GeometryServiceImpl::DeleteShape(grpc::ServerContext* context,
@@ -1265,4 +1329,31 @@ geometry::BrepFileInfo GeometryServiceImpl::getBrepFileInfo(
     info.set_format_version("OCCT_7.6");
     
     return info;
+}
+
+Handle(AIS_Shape) GeometryServiceImpl::createSphereShape(const geometry::SphereRequest& request) {
+    gp_Pnt center = fromProtoPoint(request.center());
+    
+    TopoDS_Shape sphere = BRepPrimAPI_MakeSphere(center, request.radius()).Shape();
+    Handle(AIS_Shape) ais_shape = new AIS_Shape(sphere);
+    
+    // Set color
+    Quantity_Color occt_color = fromProtoColor(request.color());
+    ais_shape->SetColor(occt_color);
+    
+    return ais_shape;
+}
+
+Handle(AIS_Shape) GeometryServiceImpl::createCylinderShape(const geometry::CylinderRequest& request) {
+    gp_Pnt position = fromProtoPoint(request.position());
+    gp_Ax2 axes(position, gp::DZ());  // Default axis along Z-direction
+    
+    TopoDS_Shape cylinder = BRepPrimAPI_MakeCylinder(axes, request.radius(), request.height()).Shape();
+    Handle(AIS_Shape) ais_shape = new AIS_Shape(cylinder);
+    
+    // Set color
+    Quantity_Color occt_color = fromProtoColor(request.color());
+    ais_shape->SetColor(occt_color);
+    
+    return ais_shape;
 }

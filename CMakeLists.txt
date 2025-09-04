@@ -277,7 +277,9 @@ if(BUILD_TESTING)
     
     target_sources(OcctImgui_Tests
         PRIVATE
-            tests/simple_grpc_test.cpp
+            tests/grpc/simple_grpc_test.cpp
+            tests/ui/ui_state_test.cpp
+            tests/integration/server_managed_test.cpp
     )
     
     target_include_directories(OcctImgui_Tests

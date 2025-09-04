@@ -96,9 +96,9 @@ cmake --build build/release --config Release
   - GLFW window management with OpenGL 3.3 core
 
 #### 3. GrpcTestClient
-- **Location:** `tests/test_client.cpp`
+- **Location:** `tests/test_client.cpp` (deprecated)
 - **Function:** Command-line tool for debugging gRPC communication
-- **Output:** Detailed mesh data statistics and connectivity testing
+- **Note:** Replaced by comprehensive automated test suite
 
 ### gRPC Protocol Buffers
 
@@ -142,7 +142,9 @@ proto/
 ├── geometry_service.proto       # gRPC service definition
 └── geometry_types.proto        # Protocol buffer data types
 tests/
-└── test_client.cpp             # gRPC testing utility
+├── grpc/simple_grpc_test.cpp    # gRPC service tests (5 tests)
+├── ui/ui_state_test.cpp         # UI state logic tests (5 tests)
+└── integration/server_managed_test.cpp  # Integration tests (4 tests)
 ```
 
 ## Development Notes
@@ -235,6 +237,66 @@ To add new geometry operations:
 3. GLFW handles window management and input events
 4. OCCT components initialized in order: rendering system → V3d viewer → AIS context → visual settings → framebuffer
 
+## Testing
+
+The project has a comprehensive, fully automated test suite with **14 tests** across 3 categories:
+
+### Test Commands
+```bash
+# Build and run all tests
+cmake --build build/debug --config Debug --target OcctImgui_Tests
+./build/debug/OcctImgui_Tests.exe
+
+# Run specific test categories
+./build/debug/OcctImgui_Tests.exe --gtest_filter="SimpleGrpcTest.*"
+./build/debug/OcctImgui_Tests.exe --gtest_filter="UIStateTest.*"
+./build/debug/OcctImgui_Tests.exe --gtest_filter="ServerManagedIntegrationTest.*"
+```
+
+### Test Architecture
+
+#### 1. gRPC Service Tests (`tests/grpc/`)
+- **Location:** `tests/grpc/simple_grpc_test.cpp`
+- **Purpose:** Test core gRPC services and BREP operations
+- **Framework:** Google Test (GTest)
+- **Features:** OCCT geometry creation, BREP export/import, error handling
+- **Tests:** 5/5 passing
+
+#### 2. UI State Tests (`tests/ui/`)
+- **Location:** `tests/ui/ui_state_test.cpp`
+- **Purpose:** Test pure thin client UI logic without server dependency
+- **Framework:** Google Test (GTest)
+- **Features:** Button states, connection transitions, pure thin client behavior
+- **Tests:** 5/5 passing
+
+#### 3. Integration Tests (`tests/integration/`)
+- **Location:** `tests/integration/server_managed_test.cpp`
+- **Purpose:** Full end-to-end testing with automatic server management
+- **Framework:** Google Test (GTest) + embedded gRPC server
+- **Features:** Auto-starts server on port 50052, tests all geometry operations
+- **Tests:** 4/4 passing
+
+### Key Testing Features
+
+**Fully Automated:** All tests are self-contained and require no manual setup. Integration tests automatically start and stop their own gRPC servers.
+
+**Zero Skipped Tests:** Unlike traditional integration tests that skip when servers aren't available, our tests guarantee execution in any environment.
+
+**Pure Thin Client Validation:** All UI tests verify that when disconnected, ALL controls are disabled (no local operations), and when connected, all operations work through the server.
+
+### Test Structure Example
+```cpp
+// Self-managing integration test
+class ServerManagedIntegrationTest : public ::testing::Test {
+    void SetUp() override {
+        StartServer();  // Auto-start on port 50052
+        client_ = std::make_unique<GeometryClient>(server_address_);
+        ASSERT_TRUE(client_->Connect());
+    }
+    void TearDown() override { StopServer(); }  // Auto-cleanup
+};
+```
+
 ## Common Issues
 
 ### Connection Failures
@@ -246,3 +308,8 @@ To add new geometry operations:
 - If "could not load cache" error: run `cmake --preset debug` to reconfigure
 - Ensure all vcpkg dependencies are installed
 - Check that C++20 standard is enabled
+
+### Test Issues
+- All tests should pass without any manual setup required
+- If tests fail, check that vcpkg dependencies are properly installed
+- Integration tests use port 50052 to avoid conflicts with running servers
