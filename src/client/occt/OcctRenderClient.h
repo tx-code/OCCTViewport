@@ -25,15 +25,22 @@
 
 #include <AIS_InteractiveObject.hxx>
 #include <AIS_ViewController.hxx> // Base class
-#include <AIS_Triangulation.hxx>
+#include <AIS_Shape.hxx>         // For AIS_Shape (recommended over AIS_Triangulation)
 #include <Quantity_Color.hxx>     // For Quantity_Color
 #include <gp_Pnt.hxx>
 #include <gp_Dir.hxx>
 #include <Poly_Triangulation.hxx>
 #include <Poly_Triangle.hxx>
 #include <Standard_Failure.hxx>
+#include <Bnd_Box.hxx>           // For bounding box calculation
+#include <Prs3d_Drawer.hxx>      // For presentation attributes
+#include <Prs3d_ShadingAspect.hxx> // For shading configuration
+#include <Graphic3d_AspectFillArea3d.hxx> // For fill area aspect
+#include <TopoDS_Face.hxx>       // For creating TopoDS_Face from triangulation
+#include <BRep_Builder.hxx>      // For building topology
+#include <BRepBuilderAPI_MakeFace.hxx> // For creating faces from triangulation
 #include <memory> // For std::unique_ptr
-#include <iostream> // For std::cerr
+#include <spdlog/spdlog.h> // For logging
 
 // Forward declarations
 struct GLFWwindow;
@@ -42,6 +49,7 @@ class AIS_Shape;
 class AIS_InteractiveObject;
 
 class GeometryClient;
+class GrpcPerformancePanel;
 
 // Using protected inheritance because:
 // Public members from AIS_ViewController become protected in OcctRenderClient
@@ -99,6 +107,10 @@ protected:
   //! Initialize OCCT Visual Settings.
   void initVisualSettings();
 
+  //! Override AIS_ViewController's handleViewRedraw method
+  virtual void handleViewRedraw(const Handle(AIS_InteractiveContext)& theCtx,
+                                const Handle(V3d_View)& theView) override;
+
   //! Initialize off-screen rendering.
   void initOffscreenRendering();
 
@@ -128,6 +140,9 @@ private:
   //! Mouse move event.
   void onMouseMove(int thePosX, int thePosY);
 
+  //! Content scale (DPI) change event.
+  void onContentScale(float xscale, float yscale);
+
   //! @name GLWF callbacks (static functions)
 private:
   //! GLFW callback redirecting messages into Message::DefaultMessenger().
@@ -155,6 +170,9 @@ private:
   static void onMouseMoveCallback(GLFWwindow *theWin, double thePosX,
                                   double thePosY);
 
+  //! Content scale (DPI) change callback.
+  static void onContentScaleCallback(GLFWwindow *theWin, float xscale, float yscale);
+
   // Helper functions
 private:
   gp_Pnt screenToViewCoordinates(int theX, int theY) const;
@@ -174,22 +192,22 @@ private:
   std::unique_ptr<ViewInternal> internal_;
 };
 
-// Template method implementation
+// Template method implementation - Using TopoDS_Face + AIS_Shape (OCCT recommended approach)
 template<typename MeshDataType>
 void OcctRenderClient::addMeshAsAisShape(const MeshDataType& mesh_data) {
   if (mesh_data.vertices.empty() || mesh_data.indices.empty()) {
-    std::cerr << "OcctRenderClient::addMeshAsAisShape(): Empty mesh data" << std::endl;
+    spdlog::error("OcctRenderClient::addMeshAsAisShape(): Empty mesh data");
     return;
   }
   
   // Validate mesh data integrity
   if (mesh_data.vertices.size() % 3 != 0) {
-    std::cerr << "OcctRenderClient::addMeshAsAisShape(): Invalid vertices size: " << mesh_data.vertices.size() << std::endl;
+    spdlog::error("OcctRenderClient::addMeshAsAisShape(): Invalid vertices size: {}", mesh_data.vertices.size());
     return;
   }
   
   if (mesh_data.indices.size() % 3 != 0) {
-    std::cerr << "OcctRenderClient::addMeshAsAisShape(): Invalid indices size: " << mesh_data.indices.size() << std::endl;
+    spdlog::error("OcctRenderClient::addMeshAsAisShape(): Invalid indices size: {}", mesh_data.indices.size());
     return;
   }
   
@@ -199,22 +217,46 @@ void OcctRenderClient::addMeshAsAisShape(const MeshDataType& mesh_data) {
   // Check for index bounds
   for (size_t i = 0; i < mesh_data.indices.size(); ++i) {
     if (mesh_data.indices[i] >= numVertices || mesh_data.indices[i] < 0) {
-      std::cerr << "OcctRenderClient::addMeshAsAisShape(): Index out of bounds: " << mesh_data.indices[i] 
-                << " (max: " << numVertices - 1 << ")" << std::endl;
+      spdlog::error("OcctRenderClient::addMeshAsAisShape(): Index out of bounds: {} (max: {})", 
+                   mesh_data.indices[i], numVertices - 1);
       return;
     }
   }
   
   try {
+    const double scaleFactor = 10.0; // Scale up server shapes for visibility
+    spdlog::debug("OcctRenderClient::addMeshAsAisShape(): Creating TopoDS_Face from triangulation with {} vertices, {} triangles ({}x scaling)", 
+                  numVertices, numTriangles, scaleFactor);
+    
+    // Log first few vertices for debugging (original and scaled)
+    if (numVertices > 0) {
+      spdlog::debug("  First vertex: ({:.3f}, {:.3f}, {:.3f}) -> scaled: ({:.3f}, {:.3f}, {:.3f})", 
+                    mesh_data.vertices[0], mesh_data.vertices[1], mesh_data.vertices[2],
+                    mesh_data.vertices[0] * scaleFactor, mesh_data.vertices[1] * scaleFactor, mesh_data.vertices[2] * scaleFactor);
+      if (numVertices > 1) {
+        spdlog::debug("  Second vertex: ({:.3f}, {:.3f}, {:.3f}) -> scaled: ({:.3f}, {:.3f}, {:.3f})", 
+                      mesh_data.vertices[3], mesh_data.vertices[4], mesh_data.vertices[5],
+                      mesh_data.vertices[3] * scaleFactor, mesh_data.vertices[4] * scaleFactor, mesh_data.vertices[5] * scaleFactor);
+      }
+    }
+    
+    // Log first few indices for debugging
+    if (numTriangles > 0) {
+      spdlog::debug("  First triangle indices: [{}, {}, {}]", 
+                    mesh_data.indices[0], mesh_data.indices[1], mesh_data.indices[2]);
+    }
+    
     // Create triangulation from mesh data with validation
     Handle(Poly_Triangulation) triangulation = new Poly_Triangulation(
         numVertices, numTriangles, Standard_True);
     
-    // Add vertices with bounds checking
+    // Add vertices with bounds checking and scaling
     for (int v = 0; v < numVertices; ++v) {
       int idx = v * 3;
       if (idx + 2 < static_cast<int>(mesh_data.vertices.size())) {
-        gp_Pnt point(mesh_data.vertices[idx], mesh_data.vertices[idx+1], mesh_data.vertices[idx+2]);
+        gp_Pnt point(mesh_data.vertices[idx] * scaleFactor, 
+                     mesh_data.vertices[idx+1] * scaleFactor, 
+                     mesh_data.vertices[idx+2] * scaleFactor);
         triangulation->SetNode(v + 1, point); // OCCT uses 1-based indexing
       }
     }
@@ -253,25 +295,70 @@ void OcctRenderClient::addMeshAsAisShape(const MeshDataType& mesh_data) {
       }
     }
     
-    // Create AIS_Triangulation object
-    Handle(AIS_Triangulation) ais_triangulation = new AIS_Triangulation(triangulation);
-    
-    // Set color with bounds checking
-    if (sizeof(mesh_data.color) >= 4 * sizeof(float)) {
-      Quantity_Color color(mesh_data.color[0], mesh_data.color[1], mesh_data.color[2], Quantity_TOC_RGB);
-      ais_triangulation->SetColor(color);
-      ais_triangulation->SetTransparency(1.0f - mesh_data.color[3]);
+    // Validate triangulation creation
+    if (triangulation.IsNull()) {
+      spdlog::error("OcctRenderClient::addMeshAsAisShape(): Failed to create triangulation");
+      return;
     }
     
-    // Display the triangulation
-    addAisObject(ais_triangulation);
+    // Log triangulation bounding box
+    Bnd_Box bbox;
+    for (int i = 1; i <= triangulation->NbNodes(); ++i) {
+      bbox.Add(triangulation->Node(i));
+    }
+    if (!bbox.IsVoid()) {
+      double xmin, ymin, zmin, xmax, ymax, zmax;
+      bbox.Get(xmin, ymin, zmin, xmax, ymax, zmax);
+      spdlog::debug("  Triangulation bounding box: ({:.3f},{:.3f},{:.3f}) to ({:.3f},{:.3f},{:.3f})",
+                    xmin, ymin, zmin, xmax, ymax, zmax);
+    }
+    
+    // OCCT recommended approach: Create TopoDS_Face from triangulation then use AIS_Shape
+    spdlog::debug("OcctRenderClient::addMeshAsAisShape(): Creating TopoDS_Face from triangulation (OCCT recommended)");
+    
+    // Create a face from the triangulation using BRepBuilderAPI_MakeFace
+    TopoDS_Face face;
+    BRep_Builder builder;
+    builder.MakeFace(face);
+    builder.UpdateFace(face, triangulation);
+    
+    if (face.IsNull()) {
+      spdlog::error("OcctRenderClient::addMeshAsAisShape(): Failed to create TopoDS_Face from triangulation");
+      return;
+    }
+    
+    // Create AIS_Shape from the face (much more flexible and efficient than AIS_Triangulation)
+    Handle(AIS_Shape) ais_shape = new AIS_Shape(face);
+    
+    if (ais_shape.IsNull()) {
+      spdlog::error("OcctRenderClient::addMeshAsAisShape(): Failed to create AIS_Shape");
+      return;
+    }
+    
+    // Set display mode to shaded
+    ais_shape->SetDisplayMode(1);  // 1 = Shaded mode
+    
+    // Set color - use bright red for visibility testing
+    if (sizeof(mesh_data.color) >= 4 * sizeof(float)) {
+      // Force bright red color for debugging visibility
+      Quantity_Color color(1.0, 0.0, 0.0, Quantity_TOC_RGB);  // Bright red
+      ais_shape->SetColor(color);
+      ais_shape->SetTransparency(0.0);  // Fully opaque
+      spdlog::debug("  Set color: FORCED BRIGHT RED (1.0, 0.0, 0.0) for AIS_Shape visibility test");
+      spdlog::debug("  Original color would be: ({:.3f}, {:.3f}, {:.3f}, {:.3f})", 
+                    mesh_data.color[0], mesh_data.color[1], mesh_data.color[2], mesh_data.color[3]);
+    }
+    
+    // Display the shape using AIS_Shape (should work much better than AIS_Triangulation)
+    spdlog::debug("OcctRenderClient::addMeshAsAisShape(): About to add AIS_Shape to display");
+    addAisObject(ais_shape);
     
   } catch (const std::exception& e) {
-    std::cerr << "OcctRenderClient::addMeshAsAisShape(): Standard exception: " << e.what() << std::endl;
+    spdlog::error("OcctRenderClient::addMeshAsAisShape(): Standard exception: {}", e.what());
   } catch (const Standard_Failure& e) {
-    std::cerr << "OcctRenderClient::addMeshAsAisShape(): OCCT exception: " << e.GetMessageString() << std::endl;
+    spdlog::error("OcctRenderClient::addMeshAsAisShape(): OCCT exception: {}", e.GetMessageString());
   } catch (...) {
-    std::cerr << "OcctRenderClient::addMeshAsAisShape(): Unknown exception caught" << std::endl;
+    spdlog::error("OcctRenderClient::addMeshAsAisShape(): Unknown exception caught");
   }
 }
 

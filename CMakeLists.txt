@@ -61,6 +61,8 @@ find_package(imgui CONFIG REQUIRED)
 if(NOT DEFINED imgui_VERSION)
     set(imgui_VERSION "1.91.9")  # Version from vcpkg
 endif()
+# Try to find implot - optional for now
+find_package(implot CONFIG QUIET)
 find_package(Protobuf CONFIG REQUIRED)
 find_package(gRPC CONFIG REQUIRED)
 
@@ -206,6 +208,8 @@ target_sources(OcctImgui_OcctClient
     PRIVATE
         src/client/occt/OcctRenderClient.cpp
         src/client/occt/OcctRenderClient.h
+        src/client/ui/grpc_performance_panel.cpp
+        src/client/ui/grpc_performance_panel.h
 )
 
 target_include_directories(OcctImgui_OcctClient
@@ -223,6 +227,15 @@ target_link_libraries(OcctImgui_OcctClient
         OpenGL::GL
         imgui::imgui
 )
+
+# Add implot if available
+if(implot_FOUND)
+    target_link_libraries(OcctImgui_OcctClient PRIVATE implot::implot)
+    target_compile_definitions(OcctImgui_OcctClient PRIVATE IMPLOT_VERSION)
+    message(STATUS "ImPlot found and linked to OcctClient")
+else()
+    message(STATUS "ImPlot not found - performance panel will use text display")
+endif()
 
 # Geometry Server library
 add_library(OcctImgui_Server STATIC)

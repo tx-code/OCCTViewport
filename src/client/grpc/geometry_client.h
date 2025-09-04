@@ -4,10 +4,12 @@
 #include <string>
 #include <vector>
 #include <functional>
+#include <chrono>
 
 // gRPC includes
 #include <grpcpp/grpcpp.h>
 #include "geometry_service.grpc.pb.h"
+#include "common/grpc_performance_monitor.h"
 
 // Forward declarations
 struct MeshRenderData;
@@ -69,6 +71,44 @@ public:
     };
     
     SystemInfo GetSystemInfo();
+    
+    // Performance monitoring
+    struct PerformanceMetrics {
+        size_t total_operations = 0;
+        double avg_response_time_ms = 0.0;
+        double success_rate_percent = 0.0;
+        double uptime_seconds = 0.0;
+        double network_throughput_mbps = 0.0;
+        std::vector<std::pair<std::string, double>> slowest_operations;
+        
+        // Network latency breakdown
+        double connection_latency_ms = 0.0;
+        double data_transfer_latency_ms = 0.0;
+        double server_processing_latency_ms = 0.0;
+    };
+    
+    PerformanceMetrics getPerformanceMetrics() const;
+    void resetPerformanceStats();
+    
+    // Network diagnostics
+    bool performLatencyTest(int samples = 10);
+    double measureConnectionLatency();
+    
+    // Benchmarking utilities
+    struct BenchmarkResult {
+        std::string operation_name;
+        size_t iterations;
+        double total_time_ms;
+        double avg_time_per_op_ms;
+        double operations_per_second;
+        std::vector<double> individual_times;
+    };
+    
+    BenchmarkResult benchmarkOperation(const std::string& operation_type, size_t iterations = 100);
+    
+    // Data size estimation for performance analysis
+    size_t estimateRequestSize(const std::string& operation_type) const;
+    size_t estimateResponseSize(const std::string& operation_type) const;
     
     // BREP file operations
     struct BrepImportResult {

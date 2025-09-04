@@ -22,6 +22,7 @@
 
 #include "OcctRenderClient.h"
 #include "../grpc/geometry_client.h"
+#include "../ui/grpc_performance_panel.h"
 
 // ImGui
 #include <imgui.h>
@@ -73,6 +74,7 @@
 #include <atomic>
 #include <mutex>
 #include <future>
+#include <cmath>
 
 // Platform specific includes for Aspect_Window
 #if defined(_WIN32)
@@ -148,10 +150,18 @@ struct OcctRenderClient::ViewInternal {
   //! Geometry client for remote CAD operations
   std::unique_ptr<GeometryClient> geometryClient;
   
+  // DPI/Content Scale tracking
+  float currentDpiScale{1.0f};
+  float lastDpiScale{1.0f};
+  
   // UI state for gRPC integration
   bool showGrpcControlPanel{true};
+  bool showGrpcPerformancePanel{false};
   bool autoRefreshMeshes{false};
   float lastRefreshTime{0.0f};
+  
+  // Performance monitoring panel
+  std::unique_ptr<GrpcPerformancePanel> performancePanel;
   
   // Cache for system info to avoid excessive network calls
   GeometryClient::SystemInfo cachedSystemInfo;
@@ -302,6 +312,10 @@ void OcctRenderClient::onMouseMoveCallback(GLFWwindow *theWin, double thePosX,
   toView(theWin)->onMouseMove((int)thePosX, (int)thePosY);
 }
 
+void OcctRenderClient::onContentScaleCallback(GLFWwindow *theWin, float xscale, float yscale) {
+  toView(theWin)->onContentScale(xscale, yscale);
+}
+
 OcctRenderClient *OcctRenderClient::toView(GLFWwindow *theWin) {
   return static_cast<OcctRenderClient *>(glfwGetWindowUserPointer(theWin));
 }
@@ -380,7 +394,41 @@ void OcctRenderClient::addAisObject(const Handle(AIS_InteractiveObject) &
   }
 
   theAisObject->SetAttributes(getDefaultAISDrawer());
-  internal_->context->Display(theAisObject, AIS_Shaded, 0, false);
+  
+  // Get AIS object count before adding
+  AIS_ListOfInteractive before_list;
+  internal_->context->DisplayedObjects(before_list);
+  int before_count = before_list.Size();
+  
+  // Display the object and trigger view update
+  internal_->context->Display(theAisObject, AIS_Shaded, 0, true);
+  
+  // Get AIS object count after adding
+  AIS_ListOfInteractive after_list;
+  internal_->context->DisplayedObjects(after_list);
+  int after_count = after_list.Size();
+  
+  // Ensure view is properly updated
+  if (!internal_->view.IsNull()) {
+    internal_->view->Invalidate();
+    internal_->view->Update();
+    // Try to fit all objects in view to ensure visibility
+    internal_->view->FitAll();
+    
+    // Log camera position and view state after FitAll
+    Handle(Graphic3d_Camera) camera = internal_->view->Camera();
+    if (!camera.IsNull()) {
+      gp_Pnt eye = camera->Eye();
+      gp_Pnt center = camera->Center();
+      gp_Dir up = camera->Up();
+      spdlog::debug("  Camera Eye: ({:.3f}, {:.3f}, {:.3f})", eye.X(), eye.Y(), eye.Z());
+      spdlog::debug("  Camera Center: ({:.3f}, {:.3f}, {:.3f})", center.X(), center.Y(), center.Z());
+      spdlog::debug("  Camera Up: ({:.3f}, {:.3f}, {:.3f})", up.X(), up.Y(), up.Z());
+      spdlog::debug("  Camera Distance: {:.3f}", camera->Distance());
+    }
+    
+    spdlog::debug("OcctRenderClient::addAisObject(): AIS Context objects: {} -> {}, View updated and fitted", before_count, after_count);
+  }
 }
 
 void OcctRenderClient::initOCCTRenderingSystem() {
@@ -436,12 +484,39 @@ void OcctRenderClient::initGui() {
   IMGUI_CHECKVERSION();
   ImGui::CreateContext();
 
+  // Get DPI scale factor from GLFW
+  float xscale, yscale;
+  glfwGetWindowContentScale(internal_->glfwWindow, &xscale, &yscale);
+  internal_->currentDpiScale = xscale; // Use x-axis scale, typically both are the same
+  internal_->lastDpiScale = internal_->currentDpiScale;
+  
+  spdlog::info("Detected DPI scale factor: {:.2f}", internal_->currentDpiScale);
+
   ImGui_ImplGlfw_InitForOpenGL(internal_->glfwWindow, true);
   ImGui_ImplOpenGL3_Init("#version 330");
 
-  // docking
-  ImGui::GetIO().ConfigFlags |= ImGuiConfigFlags_DockingEnable;
-  ImGui::GetIO().ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;
+  // Configure ImGui for DPI scaling
+  ImGuiIO& io = ImGui::GetIO();
+  io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
+  io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;
+  
+  // Apply DPI scaling
+  if (internal_->currentDpiScale > 1.0f) {
+    // Scale fonts and UI elements
+    io.FontGlobalScale = internal_->currentDpiScale;
+    
+    // Scale UI spacing and sizes
+    ImGuiStyle& style = ImGui::GetStyle();
+    style.ScaleAllSizes(internal_->currentDpiScale);
+    
+    spdlog::info("Applied DPI scaling: FontGlobalScale={:.2f}, StyleScale={:.2f}", 
+                 io.FontGlobalScale, internal_->currentDpiScale);
+  } else {
+    spdlog::info("No DPI scaling needed (scale factor: {:.2f})", internal_->currentDpiScale);
+  }
+  
+  // Set up content scale callback for dynamic DPI changes
+  glfwSetWindowContentScaleCallback(internal_->glfwWindow, onContentScaleCallback);
 }
 
 void OcctRenderClient::renderGui() {
@@ -536,6 +611,20 @@ void OcctRenderClient::renderGui() {
 
   // Render Info Window - now dockable
   if (ImGui::Begin("Render Info")) {
+    // Display and DPI information
+    ImGui::SeparatorText("Display Information");
+    ImGui::Text("DPI Scale Factor: %.2f", internal_->currentDpiScale);
+    ImGui::Text("Font Scale: %.2f", ImGui::GetIO().FontGlobalScale);
+    
+    // Get monitor information
+    GLFWmonitor* primaryMonitor = glfwGetPrimaryMonitor();
+    if (primaryMonitor) {
+      const GLFWvidmode* mode = glfwGetVideoMode(primaryMonitor);
+      if (mode) {
+        ImGui::Text("Monitor Resolution: %d x %d", mode->width, mode->height);
+      }
+    }
+    
     int width, height;
     glfwGetWindowSize(internal_->glfwWindow, &width, &height);
     ImGui::Text("Window Size: %d x %d", width, height);
@@ -644,185 +733,203 @@ void OcctRenderClient::renderGui() {
   ImGui::End();
 
   // gRPC Control Panel Window
-  if (internal_->showGrpcControlPanel && ImGui::Begin("gRPC Control Panel", &internal_->showGrpcControlPanel)) {
-    // Connection status display
-    ImGui::Text("Server: localhost:50051");
+  if (internal_->showGrpcControlPanel) {
+    if (ImGui::Begin("gRPC Control Panel", &internal_->showGrpcControlPanel)) {
+      // Connection status display
+      ImGui::Text("Server: localhost:50051");
     
-    // Check actual connection status
-    bool isConnected = internal_->geometryClient && internal_->geometryClient->IsConnected();
-    
-    // Update internal connection status based on actual state
-    if (isConnected && internal_->connectionStatus != ViewInternal::ConnectionStatus::Connected) {
-      internal_->connectionStatus = ViewInternal::ConnectionStatus::Connected;
-    } else if (!isConnected && internal_->connectionStatus == ViewInternal::ConnectionStatus::Connected) {
-      internal_->connectionStatus = ViewInternal::ConnectionStatus::Disconnected;
-      internal_->connectionErrorMessage = "Connection lost";
-    }
-    
-    // Display connection status with color coding
-    const char* statusText = "Unknown";
-    ImVec4 statusColor = ImVec4(0.5f, 0.5f, 0.5f, 1.0f); // Gray
-    
-    switch (internal_->connectionStatus) {
-      case ViewInternal::ConnectionStatus::Connected:
-        statusText = "Connected";
-        statusColor = ImVec4(0.0f, 1.0f, 0.0f, 1.0f); // Green
-        break;
-      case ViewInternal::ConnectionStatus::Connecting:
-        statusText = "Connecting...";
-        statusColor = ImVec4(1.0f, 1.0f, 0.0f, 1.0f); // Yellow
-        break;
-      case ViewInternal::ConnectionStatus::Disconnected:
-        statusText = "Disconnected";
-        statusColor = ImVec4(1.0f, 0.5f, 0.0f, 1.0f); // Orange
-        break;
-      case ViewInternal::ConnectionStatus::Error:
-        statusText = "Error";
-        statusColor = ImVec4(1.0f, 0.0f, 0.0f, 1.0f); // Red
-        break;
-    }
-    
-    ImGui::TextColored(statusColor, "Status: %s", statusText);
-    
-    // Show error message if any
-    if (!internal_->connectionErrorMessage.empty() && internal_->connectionStatus != ViewInternal::ConnectionStatus::Connected) {
-      ImGui::TextWrapped("Error: %s", internal_->connectionErrorMessage.c_str());
-    }
-    
-    // Connection management buttons
-    if (!isConnected) {
-      // Auto-reconnect logic
-      float current_time = static_cast<float>(glfwGetTime());
-      float time_since_last_attempt = current_time - internal_->lastConnectionAttemptTime;
+      // Check actual connection status
+      bool isConnected = internal_->geometryClient && internal_->geometryClient->IsConnected();
       
-      // Show manual reconnect button or auto-reconnect status
-      if (ImGui::Button("Connect to Server")) {
-        spdlog::info("gRPC Control Panel: User requested manual connection");
-        startAsyncConnection();
+      // Update internal connection status based on actual state
+      if (isConnected && internal_->connectionStatus != ViewInternal::ConnectionStatus::Connected) {
+        internal_->connectionStatus = ViewInternal::ConnectionStatus::Connected;
+      } else if (!isConnected && internal_->connectionStatus == ViewInternal::ConnectionStatus::Connected) {
+        internal_->connectionStatus = ViewInternal::ConnectionStatus::Disconnected;
+        internal_->connectionErrorMessage = "Connection lost";
       }
       
-      // Show time until next auto-reconnect attempt
-      if (internal_->connectionStatus == ViewInternal::ConnectionStatus::Disconnected || 
-          internal_->connectionStatus == ViewInternal::ConnectionStatus::Error) {
-        float time_until_retry = internal_->RECONNECT_INTERVAL - time_since_last_attempt;
-        if (time_until_retry > 0) {
-          ImGui::TextDisabled("Auto-reconnect in %.1fs", time_until_retry);
-        } else {
-          // Attempt auto-reconnect
-          ImGui::TextDisabled("Attempting auto-reconnect...");
+      // Display connection status with color coding
+      const char* statusText = "Unknown";
+      ImVec4 statusColor = ImVec4(0.5f, 0.5f, 0.5f, 1.0f); // Gray
+      
+      switch (internal_->connectionStatus) {
+        case ViewInternal::ConnectionStatus::Connected:
+          statusText = "Connected";
+          statusColor = ImVec4(0.0f, 1.0f, 0.0f, 1.0f); // Green
+          break;
+        case ViewInternal::ConnectionStatus::Connecting:
+          statusText = "Connecting...";
+          statusColor = ImVec4(1.0f, 1.0f, 0.0f, 1.0f); // Yellow
+          break;
+        case ViewInternal::ConnectionStatus::Disconnected:
+          statusText = "Disconnected";
+          statusColor = ImVec4(1.0f, 0.5f, 0.0f, 1.0f); // Orange
+          break;
+        case ViewInternal::ConnectionStatus::Error:
+          statusText = "Error";
+          statusColor = ImVec4(1.0f, 0.0f, 0.0f, 1.0f); // Red
+          break;
+      }
+      
+      ImGui::TextColored(statusColor, "Status: %s", statusText);
+      
+      // Show error message if any
+      if (!internal_->connectionErrorMessage.empty() && internal_->connectionStatus != ViewInternal::ConnectionStatus::Connected) {
+        ImGui::TextWrapped("Error: %s", internal_->connectionErrorMessage.c_str());
+      }
+      
+      // Connection management buttons
+      if (!isConnected) {
+        // Auto-reconnect logic
+        float current_time = static_cast<float>(glfwGetTime());
+        float time_since_last_attempt = current_time - internal_->lastConnectionAttemptTime;
+        
+        // Show manual reconnect button or auto-reconnect status
+        if (ImGui::Button("Connect to Server")) {
+          spdlog::info("gRPC Control Panel: User requested manual connection");
           startAsyncConnection();
         }
-      }
-    } else {
-      if (ImGui::Button("Disconnect")) {
-        spdlog::info("gRPC Control Panel: User requested disconnection");
-        shutdownGeometryClient();
-        internal_->connectionStatus = ViewInternal::ConnectionStatus::Disconnected;
-      }
-    }
-    
-    ImGui::Separator();
-    
-    if (isConnected) {
-      // Geometry operations
-      ImGui::Text("Geometry Operations");
-      
-      if (ImGui::Button("Create Random Box")) {
-        spdlog::info("gRPC Control Panel: User clicked Create Random Box button");
-        try {
-          createRandomBox();
-          spdlog::info("gRPC Control Panel: Create Random Box completed successfully");
-        } catch (const std::exception& e) {
-          spdlog::error("gRPC Control Panel: Create Random Box failed: {}", e.what());
-        }
-      }
-      ImGui::SameLine();
-      if (ImGui::Button("Create Random Cone")) {
-        spdlog::info("gRPC Control Panel: User clicked Create Random Cone button");
-        try {
-          createRandomCone();
-          spdlog::info("gRPC Control Panel: Create Random Cone completed successfully");
-        } catch (const std::exception& e) {
-          spdlog::error("gRPC Control Panel: Create Random Cone failed: {}", e.what());
-        }
-      }
-      
-      if (ImGui::Button("Create Demo Scene")) {
-        spdlog::info("gRPC Control Panel: User clicked Create Demo Scene button");
-        try {
-          createDemoScene();
-          spdlog::info("gRPC Control Panel: Create Demo Scene completed successfully");
-        } catch (const std::exception& e) {
-          spdlog::error("gRPC Control Panel: Create Demo Scene failed: {}", e.what());
-        }
-      }
-      
-      if (ImGui::Button("Clear All Shapes")) {
-        spdlog::info("gRPC Control Panel: User clicked Clear All Shapes button");
-        try {
-          clearAllShapes();
-          spdlog::info("gRPC Control Panel: Clear All Shapes completed successfully");
-        } catch (const std::exception& e) {
-          spdlog::error("gRPC Control Panel: Clear All Shapes failed: {}", e.what());
-        }
-      }
-      
-      ImGui::Separator();
-      
-      // Mesh operations
-      ImGui::Text("Mesh Operations");
-      
-      if (ImGui::Button("Refresh Meshes")) {
-        spdlog::info("gRPC Control Panel: User clicked Refresh Meshes button");
-        try {
-          refreshMeshes();
-          spdlog::info("gRPC Control Panel: Refresh Meshes completed successfully");
-        } catch (const std::exception& e) {
-          spdlog::error("gRPC Control Panel: Refresh Meshes failed: {}", e.what());
-        }
-      }
-      
-      if (ImGui::Checkbox("Auto Refresh", &internal_->autoRefreshMeshes)) {
-        spdlog::info("gRPC Control Panel: Auto Refresh toggled to: {}", internal_->autoRefreshMeshes ? "ON" : "OFF");
-      }
-      
-      ImGui::Separator();
-      
-      // Server statistics with caching to avoid excessive network calls
-      float current_time = static_cast<float>(glfwGetTime());
-      bool should_update = !internal_->hasValidSystemInfo || 
-                          (current_time - internal_->lastSystemInfoUpdateTime) >= internal_->SYSTEM_INFO_UPDATE_INTERVAL;
-      
-      if (should_update && internal_->geometryClient && internal_->geometryClient->IsConnected()) {
-        try {
-          internal_->cachedSystemInfo = internal_->geometryClient->GetSystemInfo();
-          internal_->lastSystemInfoUpdateTime = current_time;
-          internal_->hasValidSystemInfo = true;
-        } catch (const std::exception& e) {
-          spdlog::debug("gRPC Control Panel: Error updating server statistics: {}", e.what());
-          internal_->hasValidSystemInfo = false;
-        } catch (...) {
-          spdlog::debug("gRPC Control Panel: Unknown error updating server statistics");
-          internal_->hasValidSystemInfo = false;
-        }
-      }
-      
-      // Display cached system info
-      ImGui::Text("Server Statistics");
-      if (internal_->hasValidSystemInfo) {
-        ImGui::Text("Active Shapes: %d", internal_->cachedSystemInfo.active_shapes);
-        ImGui::Text("Server Version: %s", internal_->cachedSystemInfo.version.c_str());
-        ImGui::Text("OCCT Version: %s", internal_->cachedSystemInfo.occt_version.c_str());
         
-        // Show update indicator
-        float time_since_update = current_time - internal_->lastSystemInfoUpdateTime;
-        ImGui::TextDisabled("(Updated %.1fs ago)", time_since_update);
+        // Show time until next auto-reconnect attempt
+        if (internal_->connectionStatus == ViewInternal::ConnectionStatus::Disconnected || 
+            internal_->connectionStatus == ViewInternal::ConnectionStatus::Error) {
+          float time_until_retry = internal_->RECONNECT_INTERVAL - time_since_last_attempt;
+          if (time_until_retry > 0) {
+            ImGui::TextDisabled("Auto-reconnect in %.1fs", time_until_retry);
+          } else {
+            // Attempt auto-reconnect
+            ImGui::TextDisabled("Attempting auto-reconnect...");
+            startAsyncConnection();
+          }
+        }
       } else {
-        ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.0f, 1.0f), "Server Statistics: Not available");
+        if (ImGui::Button("Disconnect")) {
+          spdlog::info("gRPC Control Panel: User requested disconnection");
+          shutdownGeometryClient();
+          internal_->connectionStatus = ViewInternal::ConnectionStatus::Disconnected;
+        }
+      }
+      
+      ImGui::Separator();
+      
+      if (isConnected) {
+        // Geometry operations
+        ImGui::Text("Geometry Operations");
+        
+        if (ImGui::Button("Create Random Box")) {
+          spdlog::info("gRPC Control Panel: User clicked Create Random Box button");
+          try {
+            createRandomBox();
+            spdlog::info("gRPC Control Panel: Create Random Box completed successfully");
+          } catch (const std::exception& e) {
+            spdlog::error("gRPC Control Panel: Create Random Box failed: {}", e.what());
+          }
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Create Random Cone")) {
+          spdlog::info("gRPC Control Panel: User clicked Create Random Cone button");
+          try {
+            createRandomCone();
+            spdlog::info("gRPC Control Panel: Create Random Cone completed successfully");
+          } catch (const std::exception& e) {
+            spdlog::error("gRPC Control Panel: Create Random Cone failed: {}", e.what());
+          }
+        }
+        
+        if (ImGui::Button("Create Demo Scene")) {
+          spdlog::info("gRPC Control Panel: User clicked Create Demo Scene button");
+          try {
+            createDemoScene();
+            spdlog::info("gRPC Control Panel: Create Demo Scene completed successfully");
+          } catch (const std::exception& e) {
+            spdlog::error("gRPC Control Panel: Create Demo Scene failed: {}", e.what());
+          }
+        }
+        
+        if (ImGui::Button("Clear All Shapes")) {
+          spdlog::info("gRPC Control Panel: User clicked Clear All Shapes button");
+          try {
+            clearAllShapes();
+            spdlog::info("gRPC Control Panel: Clear All Shapes completed successfully");
+          } catch (const std::exception& e) {
+            spdlog::error("gRPC Control Panel: Clear All Shapes failed: {}", e.what());
+          }
+        }
+        
+        ImGui::Separator();
+        
+        // Mesh operations
+        ImGui::Text("Mesh Operations");
+        
+        if (ImGui::Button("Refresh Meshes")) {
+          spdlog::info("gRPC Control Panel: User clicked Refresh Meshes button");
+          try {
+            refreshMeshes();
+            spdlog::info("gRPC Control Panel: Refresh Meshes completed successfully");
+          } catch (const std::exception& e) {
+            spdlog::error("gRPC Control Panel: Refresh Meshes failed: {}", e.what());
+          }
+        }
+        
+        if (ImGui::Checkbox("Auto Refresh", &internal_->autoRefreshMeshes)) {
+          spdlog::info("gRPC Control Panel: Auto Refresh toggled to: {}", internal_->autoRefreshMeshes ? "ON" : "OFF");
+        }
+        
+        ImGui::Separator();
+        
+        // Server statistics with caching to avoid excessive network calls
+        float current_time = static_cast<float>(glfwGetTime());
+        bool should_update = !internal_->hasValidSystemInfo || 
+                            (current_time - internal_->lastSystemInfoUpdateTime) >= internal_->SYSTEM_INFO_UPDATE_INTERVAL;
+        
+        if (should_update && internal_->geometryClient && internal_->geometryClient->IsConnected()) {
+          try {
+            internal_->cachedSystemInfo = internal_->geometryClient->GetSystemInfo();
+            internal_->lastSystemInfoUpdateTime = current_time;
+            internal_->hasValidSystemInfo = true;
+          } catch (const std::exception& e) {
+            spdlog::debug("gRPC Control Panel: Error updating server statistics: {}", e.what());
+            internal_->hasValidSystemInfo = false;
+          } catch (...) {
+            spdlog::debug("gRPC Control Panel: Unknown error updating server statistics");
+            internal_->hasValidSystemInfo = false;
+          }
+        }
+        
+        // Display cached system info
+        ImGui::Text("Server Statistics");
+        if (internal_->hasValidSystemInfo) {
+          ImGui::Text("Active Shapes: %d", internal_->cachedSystemInfo.active_shapes);
+          ImGui::Text("Server Version: %s", internal_->cachedSystemInfo.version.c_str());
+          ImGui::Text("OCCT Version: %s", internal_->cachedSystemInfo.occt_version.c_str());
+          
+          // Show update indicator
+          float time_since_update = current_time - internal_->lastSystemInfoUpdateTime;
+          ImGui::TextDisabled("(Updated %.1fs ago)", time_since_update);
+        } else {
+          ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.0f, 1.0f), "Server Statistics: Not available");
+        }
+        
+        ImGui::Separator();
+        
+        // Performance monitoring controls
+        ImGui::Text("Performance Monitoring");
+        if (ImGui::Checkbox("Show Performance Panel", &internal_->showGrpcPerformancePanel)) {
+          spdlog::info("gRPC Control Panel: Performance Panel toggled to: {}", internal_->showGrpcPerformancePanel ? "ON" : "OFF");
+        }
       }
     }
+    ImGui::End();
   }
-  ImGui::End();
+
+  // gRPC Performance Panel Window
+  if (internal_->showGrpcPerformancePanel && internal_->performancePanel) {
+    internal_->performancePanel->setVisible(true);
+    internal_->performancePanel->render();
+  } else if (internal_->performancePanel) {
+    internal_->performancePanel->setVisible(false);
+  }
 
   // OCCT Viewport Window - ensure it stays docked
   ImGuiWindowFlags viewport_window_flags = ImGuiWindowFlags_NoCollapse;
@@ -962,18 +1069,8 @@ void OcctRenderClient::initDemoScene() {
     }
   }
 
-  // Create local OCCT shapes
-  spdlog::info("OcctRenderClient: Creating local OCCT demo shapes...");
-  gp_Ax2 anAxis;
-  anAxis.SetLocation(gp_Pnt(0.0, 0.0, 0.0));
-  Handle(AIS_Shape) aBox =
-      new AIS_Shape(BRepPrimAPI_MakeBox(anAxis, 50, 50, 50).Shape());
-  addAisObject(aBox);
-
-  anAxis.SetLocation(gp_Pnt(25.0, 125.0, 0.0));
-  Handle(AIS_Shape) aCone =
-      new AIS_Shape(BRepPrimAPI_MakeCone(anAxis, 25, 0, 50).Shape());
-  addAisObject(aCone);
+  // No local OCCT shapes creation - only show server shapes, grid and view cube
+  spdlog::info("OcctRenderClient: Skipping local shape creation - showing only server shapes, grid and view cube");
 
   TCollection_AsciiString aGlInfo;
   {
@@ -1147,6 +1244,17 @@ void OcctRenderClient::initVisualSettings() {
 
   context_->SetHighlightStyle(Prs3d_TypeOfHighlight_LocalDynamic,
                               hilightLocalDrawer);
+}
+
+void OcctRenderClient::handleViewRedraw(const Handle(AIS_InteractiveContext)& theCtx,
+                                        const Handle(V3d_View)& theView) {
+  // Handle view redraw requests from AIS_ViewController
+  // This method is called when the view needs to be updated
+  if (!theView.IsNull()) {
+    theView->Invalidate();
+    theView->Update();
+    spdlog::debug("OcctRenderClient::handleViewRedraw(): View updated");
+  }
 }
 
 void OcctRenderClient::mainloop() {
@@ -1356,6 +1464,45 @@ void OcctRenderClient::onMouseScroll(double theOffsetX, double theOffsetY) {
   }
 }
 
+void OcctRenderClient::onContentScale(float xscale, float yscale) {
+  internal_->currentDpiScale = xscale; // Use x-axis scale
+  
+  // Only apply scaling if it changed significantly (avoid unnecessary updates)
+  float scaleDiff = std::abs(internal_->currentDpiScale - internal_->lastDpiScale);
+  if (scaleDiff > 0.01f) { // 1% threshold
+    spdlog::info("DPI scale changed: {:.2f} -> {:.2f}", 
+                 internal_->lastDpiScale, internal_->currentDpiScale);
+    
+    // Update ImGui scaling
+    ImGuiIO& io = ImGui::GetIO();
+    
+    // Calculate relative scale factor
+    float relativeScale = internal_->currentDpiScale / internal_->lastDpiScale;
+    
+    // Apply font scaling
+    io.FontGlobalScale = internal_->currentDpiScale;
+    
+    // Apply style scaling (restore original then apply new scale)
+    ImGuiStyle& style = ImGui::GetStyle();
+    
+    // For existing styles, we need to scale relatively
+    if (internal_->lastDpiScale > 0.0f) {
+      // First restore to original scale, then apply new scale  
+      float restoreScale = 1.0f / internal_->lastDpiScale;
+      style.ScaleAllSizes(restoreScale);
+      style.ScaleAllSizes(internal_->currentDpiScale);
+    } else {
+      // Fresh scaling
+      style.ScaleAllSizes(internal_->currentDpiScale);
+    }
+    
+    internal_->lastDpiScale = internal_->currentDpiScale;
+    
+    spdlog::info("Applied dynamic DPI scaling: FontScale={:.2f}, StyleScale={:.2f}", 
+                 io.FontGlobalScale, internal_->currentDpiScale);
+  }
+}
+
 // Convert screen coordinates to 3D coordinates in the view
 // copy from mayo: graphics_utils.cpp
 gp_Pnt OcctRenderClient::screenToViewCoordinates(int theX, int theY) const {
@@ -1442,6 +1589,15 @@ bool OcctRenderClient::initGeometryClient() {
       internal_->geometryClient = std::make_unique<GeometryClient>("localhost:50051");
     }
     
+    // Create performance panel if not exists
+    if (!internal_->performancePanel && internal_->geometryClient) {
+      // Convert unique_ptr to shared_ptr for the performance panel
+      std::shared_ptr<GeometryClient> sharedClient(internal_->geometryClient.get(), [](GeometryClient*){
+        // Empty deleter since the unique_ptr will manage the lifetime
+      });
+      internal_->performancePanel = std::make_unique<GrpcPerformancePanel>(sharedClient);
+    }
+    
     // Ensure we're back to our OpenGL context before proceeding
     if (currentContext && currentContext == internal_->glfwWindow) {
       glfwMakeContextCurrent(internal_->glfwWindow);
@@ -1503,6 +1659,15 @@ void OcctRenderClient::startAsyncConnection() {
       // Create client if needed
       if (!internal_->geometryClient) {
         internal_->geometryClient = std::make_unique<GeometryClient>("localhost:50051");
+      }
+      
+      // Create performance panel if not exists
+      if (!internal_->performancePanel && internal_->geometryClient) {
+        // Convert unique_ptr to shared_ptr for the performance panel
+        std::shared_ptr<GeometryClient> sharedClient(internal_->geometryClient.get(), [](GeometryClient*){
+          // Empty deleter since the unique_ptr will manage the lifetime
+        });
+        internal_->performancePanel = std::make_unique<GrpcPerformancePanel>(sharedClient);
       }
       
       // Attempt connection

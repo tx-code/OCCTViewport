@@ -1,4 +1,5 @@
 #include "geometry_client.h"
+#include "../../common/grpc_performance_monitor.h"
 #include <spdlog/spdlog.h>
 #include <chrono>
 
@@ -17,6 +18,8 @@ GeometryClient::~GeometryClient() {
 }
 
 bool GeometryClient::Connect() {
+    GRPC_PERF_TIMER("Connect");
+    
     try {
         spdlog::info("GeometryClient: Connecting to server: {}", server_address_);
         
@@ -85,6 +88,8 @@ bool GeometryClient::IsConnected() const {
 std::string GeometryClient::CreateBox(double x, double y, double z, 
                                      double width, double height, double depth,
                                      double r, double g, double b) {
+    GRPC_PERF_TIMER("CreateBox");
+    
     if (!connected_) {
         spdlog::error("GeometryClient::CreateBox: Not connected to server");
         return "";
@@ -121,6 +126,8 @@ std::string GeometryClient::CreateBox(double x, double y, double z,
 std::string GeometryClient::CreateCone(double x, double y, double z,
                                       double base_radius, double top_radius, double height,
                                       double r, double g, double b) {
+    GRPC_PERF_TIMER("CreateCone");
+    
     if (!connected_) {
         spdlog::error("GeometryClient::CreateCone: Not connected to server");
         return "";
@@ -565,7 +572,10 @@ bool GeometryClient::SetShapeColor(const std::string& shape_id, double r, double
 }
 
 std::vector<GeometryClient::MeshData> GeometryClient::GetAllMeshes() {
+    auto _perf_timer = GrpcPerformanceMonitor::getInstance().createTimer("GetAllMeshes");
+    
     std::vector<MeshData> meshes;
+    size_t total_bytes_received = 0;
     
     if (!connected_) {
         spdlog::error("GeometryClient::GetAllMeshes: Not connected to server");
@@ -581,9 +591,16 @@ std::vector<GeometryClient::MeshData> GeometryClient::GetAllMeshes() {
         
         geometry::MeshData proto_mesh;
         while (reader->Read(&proto_mesh)) {
+            // Calculate approximate bytes received for this mesh
+            size_t mesh_bytes = proto_mesh.vertices_size() * sizeof(float) + 
+                               proto_mesh.indices_size() * sizeof(int32_t) + 
+                               proto_mesh.normals_size() * sizeof(float) +
+                               proto_mesh.shape_id().size() + 16; // overhead
+            total_bytes_received += mesh_bytes;
+            
             MeshData mesh_data = ConvertProtoMesh(proto_mesh);
-            spdlog::info("GeometryClient::GetAllMeshes: Received mesh for shape: {} ({} vertices)", 
-                        mesh_data.shape_id, mesh_data.vertices.size() / 3);
+            spdlog::info("GeometryClient::GetAllMeshes: Received mesh for shape: {} ({} vertices, ~{} bytes)", 
+                        mesh_data.shape_id, mesh_data.vertices.size() / 3, mesh_bytes);
             meshes.push_back(std::move(mesh_data));
         }
         
@@ -591,11 +608,17 @@ std::vector<GeometryClient::MeshData> GeometryClient::GetAllMeshes() {
         if (!status.ok()) {
             spdlog::error("GeometryClient::GetAllMeshes: Stream failed - {}", status.error_message());
         } else {
-            spdlog::info("GeometryClient::GetAllMeshes: Successfully received {} meshes", meshes.size());
+            spdlog::info("GeometryClient::GetAllMeshes: Successfully received {} meshes, total ~{} bytes", 
+                        meshes.size(), total_bytes_received);
         }
         
     } catch (const std::exception& e) {
         spdlog::error("GeometryClient::GetAllMeshes: Exception: {}", e.what());
+    }
+    
+    // Set bytes received for performance monitoring
+    if (_perf_timer) {
+        _perf_timer->setBytesReceived(total_bytes_received);
     }
     
     return meshes;
