@@ -8,7 +8,7 @@ that each client only sees their own shapes.
 import grpc
 import time
 import sys
-sys.path.append('../../build/debug/generated')
+sys.path.append('generated')
 
 import geometry_service_pb2
 import geometry_service_pb2_grpc

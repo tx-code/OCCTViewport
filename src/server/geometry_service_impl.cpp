@@ -141,6 +141,7 @@ void GeometryServiceImpl::cleanupInactiveSessions(std::chrono::minutes timeout) 
 
 std::string GeometryServiceImpl::getClientId(grpc::ServerContext* context) const {
     if (!context) {
+        spdlog::warn("getClientId: null context provided");
         return "Unknown";
     }
     
@@ -149,6 +150,8 @@ std::string GeometryServiceImpl::getClientId(grpc::ServerContext* context) const
     if (it != metadata.end()) {
         return std::string(it->second.data(), it->second.length());
     }
+    
+    spdlog::warn("getClientId: no client-id metadata found");
     return "Unknown";
 }
 
@@ -344,15 +347,16 @@ grpc::Status GeometryServiceImpl::GetSystemInfo(grpc::ServerContext* context,
     response->set_occt_version("Unknown");
 #endif
     
-    // Add session info to log
+    // Add session info to log - capture session shape count safely
     size_t total_sessions = 0;
+    size_t session_shape_count = session->shapes.size();
     {
         std::lock_guard<std::mutex> lock(sessions_mutex_);
         total_sessions = client_sessions_.size();
     }
     
     spdlog::info("[{}] GetSystemInfo: Session has {} shapes, total {} active sessions", 
-                client_id, session->shapes.size(), total_sessions);
+                client_id, session_shape_count, total_sessions);
     return grpc::Status::OK;
 }
 
@@ -647,31 +651,36 @@ geometry::MeshData GeometryServiceImpl::extractMeshData(const std::string& shape
     mesh_data.set_shape_id(shape_id);
     // mesh_data.set_version(1); // Field removed in simplified proto
     
-    // Try to find shape in any session (for backward compatibility)
+    // Thread-safe shape data lookup with copy
+    ShapeData shape_data_copy;
+    bool shape_found = false;
+    
     // First check deprecated global shapes_
-    const ShapeData* shape_data_ptr = nullptr;
     auto it = shapes_.find(shape_id);
     if (it != shapes_.end()) {
-        shape_data_ptr = &it->second;
+        shape_data_copy = it->second;  // Make a copy
+        shape_found = true;
     } else {
-        // Search through all sessions
+        // Search through all sessions with proper locking
         std::lock_guard<std::mutex> lock(sessions_mutex_);
         for (const auto& [client_id, session] : client_sessions_) {
             auto session_it = session->shapes.find(shape_id);
             if (session_it != session->shapes.end()) {
-                shape_data_ptr = &session_it->second;
+                shape_data_copy = session_it->second;  // Make a copy while holding lock
+                shape_found = true;
                 break;
             }
         }
+        // Lock automatically released here, but we have our own copy
     }
     
-    if (!shape_data_ptr) {
+    if (!shape_found) {
         spdlog::error("extractMeshData: Shape not found: {}", shape_id);
         return mesh_data;
     }
     
-    const ShapeData& shape_data = *shape_data_ptr;
-    const TopoDS_Shape& shape = shape_data.topo_shape;
+    // Now work with our thread-safe copy
+    const TopoDS_Shape& shape = shape_data_copy.topo_shape;
     
     // Generate mesh if not already done
     BRepMesh_IncrementalMesh mesh(shape, 0.1, Standard_False, 0.5, Standard_True);
@@ -762,8 +771,8 @@ geometry::MeshData GeometryServiceImpl::extractMeshData(const std::string& shape
         mesh_data.add_indices(index);
     }
     
-    // Set color
-    mesh_data.mutable_color()->CopyFrom(shape_data.color);
+    // Set color from our thread-safe copy
+    mesh_data.mutable_color()->CopyFrom(shape_data_copy.color);
     
     // Calculate bounding box (simplified)
     if (!vertices.empty()) {
@@ -832,26 +841,44 @@ grpc::Status GeometryServiceImpl::ImportModelFile(grpc::ServerContext* context,
     auto session = getOrCreateSession(client_id);
     
     try {
-        // We need to pass session context to the internal methods
-        // For now, temporarily store in global shapes_ and then move to session
+        // Import with proper exception safety
         std::vector<std::string> shape_ids = importModelFileInternal(
             request->file_path(), request->options());
         
-        // Move shapes from global to session
-        for (const auto& shape_id : shape_ids) {
-            auto it = shapes_.find(shape_id);
-            if (it != shapes_.end()) {
-                // Generate new session-specific ID
-                std::string new_shape_id = session->generateShapeId();
-                ShapeData shape_data = std::move(it->second);
-                shape_data.shape_id = new_shape_id;
-                session->shapes[new_shape_id] = std::move(shape_data);
-                shapes_.erase(it);
-                
-                // Update the shape_ids vector with new IDs
-                auto& mutable_ids = const_cast<std::vector<std::string>&>(shape_ids);
-                std::replace(mutable_ids.begin(), mutable_ids.end(), shape_id, new_shape_id);
+        // Move shapes from global to session with rollback capability
+        std::vector<std::string> session_shape_ids;
+        std::vector<std::pair<std::string, ShapeData>> backup_shapes;
+        
+        try {
+            for (const auto& shape_id : shape_ids) {
+                auto it = shapes_.find(shape_id);
+                if (it != shapes_.end()) {
+                    // Generate new session-specific ID
+                    std::string new_shape_id = session->generateShapeId();
+                    
+                    // Back up the original shape for rollback
+                    backup_shapes.emplace_back(shape_id, it->second);
+                    
+                    // Move to session
+                    ShapeData shape_data = std::move(it->second);
+                    shape_data.shape_id = new_shape_id;
+                    session->shapes[new_shape_id] = std::move(shape_data);
+                    shapes_.erase(it);
+                    
+                    session_shape_ids.push_back(new_shape_id);
+                }
             }
+            shape_ids = std::move(session_shape_ids);  // Use session IDs
+        } catch (...) {
+            // Rollback: restore backed up shapes
+            for (const auto& [orig_id, shape_data] : backup_shapes) {
+                shapes_[orig_id] = shape_data;
+            }
+            // Remove any partially added shapes from session
+            for (const auto& session_id : session_shape_ids) {
+                session->shapes.erase(session_id);
+            }
+            throw;  // Re-throw original exception
         }
         
         response->set_success(true);
