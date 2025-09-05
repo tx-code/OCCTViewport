@@ -4,6 +4,9 @@ build/
 .claude/
 CMakeUserPresets.json
 
+# Third-party dependencies
+# Note: third_party/ is managed externally, not ignored to allow future additions
+
 # Temporary files
 *.bat
 imgui.ini
