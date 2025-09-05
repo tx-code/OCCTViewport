@@ -188,6 +188,25 @@ void GrpcPerformancePanel::renderOverviewSection() {
     // Uptime and system info
     ImGui::Text("System Uptime: %.1f seconds", last_snapshot_.uptime_seconds);
     
+    // Display OCCT version from compile-time definition
+#ifdef OCCT_VERSION
+    ImGui::Text("OCCT Version: %s", OCCT_VERSION);
+#endif
+#ifdef IMGUI_VERSION
+    ImGui::Text("ImGui Version: %s", IMGUI_VERSION);
+#endif
+    
+    // Display server info if connected
+    if (geometry_client_ && geometry_client_->IsConnected()) {
+        try {
+            auto sys_info = geometry_client_->GetSystemInfo();
+            ImGui::Text("Server Version: %s", sys_info.version.c_str());
+            ImGui::Text("Active Shapes: %d", sys_info.active_shapes);
+        } catch (const std::exception& e) {
+            // Silently handle error - info might not be available
+        }
+    }
+    
     if (!last_snapshot_.top_slow_ops.empty()) {
         ImGui::Text("Slowest Operations:");
         for (size_t i = 0; i < std::min(size_t(5), last_snapshot_.top_slow_ops.size()); ++i) {

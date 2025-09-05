@@ -218,37 +218,6 @@ bool GeometryClient::ClearAll() {
     }
 }
 
-std::vector<std::string> GeometryClient::ListShapes() {
-    std::vector<std::string> shapes;
-    
-    if (!connected_) {
-        spdlog::error("GeometryClient::ListShapes: Not connected to server");
-        return shapes;
-    }
-    
-    try {
-        geometry::EmptyRequest request;
-        geometry::ShapeListResponse response;
-        grpc::ClientContext context;
-        
-        grpc::Status status = stub_->ListShapes(&context, request, &response);
-        
-        if (status.ok()) {
-            for (int i = 0; i < response.shape_ids_size(); ++i) {
-                shapes.push_back(response.shape_ids(i));
-            }
-            spdlog::info("GeometryClient::ListShapes: Found {} shapes", shapes.size());
-        } else {
-            spdlog::error("GeometryClient::ListShapes: Failed - {}", status.error_message());
-        }
-        
-    } catch (const std::exception& e) {
-        spdlog::error("GeometryClient::ListShapes: Exception: {}", e.what());
-    }
-    
-    return shapes;
-}
-
 GeometryClient::SystemInfo GeometryClient::GetSystemInfo() {
     SystemInfo info;
     info.version = "unknown";
@@ -282,186 +251,6 @@ GeometryClient::SystemInfo GeometryClient::GetSystemInfo() {
     }
     
     return info;
-}
-
-// BREP file operations implementation
-
-GeometryClient::BrepImportResult GeometryClient::ImportBrepFile(
-    const std::string& file_path, bool merge_shapes, bool validate_shapes) {
-    
-    BrepImportResult result;
-    result.success = false;
-    
-    if (!connected_) {
-        result.message = "Not connected to server";
-        spdlog::error("GeometryClient::ImportBrepFile: Not connected to server");
-        return result;
-    }
-    
-    try {
-        geometry::BrepFileRequest request;
-        request.set_file_path(file_path);
-        
-        // Set import options
-        geometry::BrepImportOptions* options = request.mutable_options();
-        options->set_merge_shapes(merge_shapes);
-        options->set_validate_shapes(validate_shapes);
-        
-        geometry::BrepImportResponse response;
-        grpc::ClientContext context;
-        
-        grpc::Status status = stub_->ImportBrepFile(&context, request, &response);
-        
-        if (status.ok()) {
-            result.success = response.success();
-            result.message = response.message();
-            
-            for (int i = 0; i < response.shape_ids_size(); ++i) {
-                result.shape_ids.push_back(response.shape_ids(i));
-            }
-            
-            if (response.has_file_info()) {
-                const auto& file_info = response.file_info();
-                result.file_size = file_info.file_size();
-                result.creation_time = file_info.creation_time();
-                result.format_version = file_info.format_version();
-            }
-            
-            spdlog::info("GeometryClient::ImportBrepFile: {} - Imported {} shapes from {}", 
-                        result.message, result.shape_ids.size(), file_path);
-        } else {
-            result.message = "gRPC call failed: " + status.error_message();
-            spdlog::error("GeometryClient::ImportBrepFile: Failed - {}", status.error_message());
-        }
-        
-    } catch (const std::exception& e) {
-        result.message = "Exception: " + std::string(e.what());
-        spdlog::error("GeometryClient::ImportBrepFile: Exception: {}", e.what());
-    }
-    
-    return result;
-}
-
-GeometryClient::BrepImportResult GeometryClient::LoadBrepFromData(
-    const std::string& brep_data, const std::string& filename, 
-    bool merge_shapes, bool validate_shapes) {
-    
-    BrepImportResult result;
-    result.success = false;
-    
-    if (!connected_) {
-        result.message = "Not connected to server";
-        spdlog::error("GeometryClient::LoadBrepFromData: Not connected to server");
-        return result;
-    }
-    
-    try {
-        geometry::BrepDataRequest request;
-        request.set_brep_data(brep_data);
-        request.set_filename(filename);
-        
-        // Set import options
-        geometry::BrepImportOptions* options = request.mutable_options();
-        options->set_merge_shapes(merge_shapes);
-        options->set_validate_shapes(validate_shapes);
-        
-        geometry::BrepImportResponse response;
-        grpc::ClientContext context;
-        
-        grpc::Status status = stub_->LoadBrepFromData(&context, request, &response);
-        
-        if (status.ok()) {
-            result.success = response.success();
-            result.message = response.message();
-            
-            for (int i = 0; i < response.shape_ids_size(); ++i) {
-                result.shape_ids.push_back(response.shape_ids(i));
-            }
-            
-            if (response.has_file_info()) {
-                const auto& file_info = response.file_info();
-                result.file_size = file_info.file_size();
-                result.creation_time = file_info.creation_time();
-                result.format_version = file_info.format_version();
-            }
-            
-            spdlog::info("GeometryClient::LoadBrepFromData: {} - Loaded {} shapes from data ({})", 
-                        result.message, result.shape_ids.size(), filename);
-        } else {
-            result.message = "gRPC call failed: " + status.error_message();
-            spdlog::error("GeometryClient::LoadBrepFromData: Failed - {}", status.error_message());
-        }
-        
-    } catch (const std::exception& e) {
-        result.message = "Exception: " + std::string(e.what());
-        spdlog::error("GeometryClient::LoadBrepFromData: Exception: {}", e.what());
-    }
-    
-    return result;
-}
-
-GeometryClient::BrepExportResult GeometryClient::ExportBrepFile(
-    const std::vector<std::string>& shape_ids, 
-    bool export_as_compound, bool validate_before_export) {
-    
-    BrepExportResult result;
-    result.success = false;
-    
-    if (!connected_) {
-        result.message = "Not connected to server";
-        spdlog::error("GeometryClient::ExportBrepFile: Not connected to server");
-        return result;
-    }
-    
-    if (shape_ids.empty()) {
-        result.message = "No shapes to export";
-        spdlog::error("GeometryClient::ExportBrepFile: No shapes to export");
-        return result;
-    }
-    
-    try {
-        geometry::BrepExportRequest request;
-        
-        for (const auto& shape_id : shape_ids) {
-            request.add_shape_ids(shape_id);
-        }
-        
-        // Set export options
-        geometry::BrepExportOptions* options = request.mutable_options();
-        options->set_export_as_compound(export_as_compound);
-        options->set_validate_before_export(validate_before_export);
-        
-        geometry::BrepFileResponse response;
-        grpc::ClientContext context;
-        
-        grpc::Status status = stub_->ExportBrepFile(&context, request, &response);
-        
-        if (status.ok()) {
-            result.success = response.success();
-            result.message = response.message();
-            result.brep_data = response.brep_data();
-            result.filename = response.filename();
-            
-            if (response.has_file_info()) {
-                const auto& file_info = response.file_info();
-                result.file_size = file_info.file_size();
-                result.creation_time = file_info.creation_time();
-                result.format_version = file_info.format_version();
-            }
-            
-            spdlog::info("GeometryClient::ExportBrepFile: {} - Exported {} shapes, data size: {} bytes", 
-                        result.message, shape_ids.size(), result.brep_data.size());
-        } else {
-            result.message = "gRPC call failed: " + status.error_message();
-            spdlog::error("GeometryClient::ExportBrepFile: Failed - {}", status.error_message());
-        }
-        
-    } catch (const std::exception& e) {
-        result.message = "Exception: " + std::string(e.what());
-        spdlog::error("GeometryClient::ExportBrepFile: Exception: {}", e.what());
-    }
-    
-    return result;
 }
 
 // Helper methods
@@ -709,181 +498,150 @@ void GeometryClient::SetShapeUpdateCallback(ShapeUpdateCallback callback) {
     update_callback_ = std::move(callback);
 }
 
-// ========== STEP File Operations ==========
 
-GeometryClient::StepImportResult GeometryClient::ImportStepFile(const std::string& file_path, const StepImportOptions& options) {
-    StepImportResult result;
+// Unified model file operations implementation
+
+GeometryClient::ModelImportResult GeometryClient::ImportModelFile(const std::string& file_path, const ModelImportOptions& options) {
+    ModelImportResult result;
     result.success = false;
     
     if (!connected_) {
-        spdlog::error("GeometryClient::ImportStepFile: Not connected to server");
+        spdlog::error("GeometryClient::ImportModelFile: Not connected to server");
         result.message = "Not connected to server";
         return result;
     }
     
     try {
-        geometry::StepFileRequest request;
+        geometry::ModelFileRequest request;
         request.set_file_path(file_path);
         
         // Set import options
         auto* proto_options = request.mutable_options();
+        proto_options->set_auto_detect_format(options.auto_detect_format);
+        proto_options->set_force_format(options.force_format);
         proto_options->set_import_colors(options.import_colors);
         proto_options->set_import_names(options.import_names);
-        proto_options->set_import_materials(options.import_materials);
+        // proto_options->set_import_materials(options.import_materials); // Field removed in simplified proto
         proto_options->set_precision(options.precision);
+        proto_options->set_merge_shapes(options.merge_shapes);
+        // proto_options->set_validate_shapes(options.validate_shapes); // Field removed in simplified proto
+        // proto_options->set_heal_shapes(options.heal_shapes); // Field removed in simplified proto
+        // proto_options->set_linear_tolerance(options.linear_tolerance); // Field removed in simplified proto
+        // proto_options->set_angular_tolerance(options.angular_tolerance); // Field removed in simplified proto
         
-        geometry::StepImportResponse response;
+        geometry::ModelImportResponse response;
         grpc::ClientContext context;
         
-        grpc::Status status = stub_->ImportStepFile(&context, request, &response);
+        grpc::Status status = stub_->ImportModelFile(&context, request, &response);
         
         if (status.ok() && response.success()) {
             result.success = true;
             result.message = response.message();
+            result.detected_format = response.detected_format();
             
             for (int i = 0; i < response.shape_ids_size(); ++i) {
                 result.shape_ids.push_back(response.shape_ids(i));
             }
             
             // Copy file info
-            const auto& file_info = response.file_info();
-            result.filename = file_info.filename();
-            result.file_size = file_info.file_size();
-            result.shape_count = file_info.shape_count();
-            result.schema_version = file_info.schema_version();
-            result.creation_time = file_info.creation_time();
-            
-            spdlog::info("GeometryClient::ImportStepFile: Successfully imported {} shapes from {}", 
-                        result.shape_ids.size(), file_path);
-        } else {
-            result.message = status.ok() ? response.message() : status.error_message();
-            spdlog::error("GeometryClient::ImportStepFile: Failed - {}", result.message);
-        }
-        
-    } catch (const std::exception& e) {
-        result.message = std::string("Exception: ") + e.what();
-        spdlog::error("GeometryClient::ImportStepFile: Exception: {}", e.what());
-    }
-    
-    return result;
-}
-
-GeometryClient::StepImportResult GeometryClient::LoadStepFromData(const std::string& step_data, const std::string& filename, const StepImportOptions& options) {
-    StepImportResult result;
-    result.success = false;
-    
-    if (!connected_) {
-        spdlog::error("GeometryClient::LoadStepFromData: Not connected to server");
-        result.message = "Not connected to server";
-        return result;
-    }
-    
-    try {
-        geometry::StepDataRequest request;
-        request.set_step_data(step_data);
-        request.set_filename(filename);
-        
-        // Set import options
-        auto* proto_options = request.mutable_options();
-        proto_options->set_import_colors(options.import_colors);
-        proto_options->set_import_names(options.import_names);
-        proto_options->set_import_materials(options.import_materials);
-        proto_options->set_precision(options.precision);
-        
-        geometry::StepImportResponse response;
-        grpc::ClientContext context;
-        
-        grpc::Status status = stub_->LoadStepFromData(&context, request, &response);
-        
-        if (status.ok() && response.success()) {
-            result.success = true;
-            result.message = response.message();
-            
-            for (int i = 0; i < response.shape_ids_size(); ++i) {
-                result.shape_ids.push_back(response.shape_ids(i));
+            if (response.has_file_info()) {
+                const auto& file_info = response.file_info();
+                result.filename = file_info.filename();
+                result.file_size = file_info.file_size();
+                result.shape_count = file_info.shape_count();
+                result.format = file_info.format();
+                result.creation_time = file_info.creation_time();
+                // result.format_version = file_info.format_version(); // Field removed in simplified proto
+                
+                // for (int i = 0; i < file_info.supported_features_size(); ++i) { // Field removed in simplified proto
+                //     result.supported_features.push_back(file_info.supported_features(i));
+                // }
             }
             
-            // Copy file info
-            const auto& file_info = response.file_info();
-            result.filename = file_info.filename();
-            result.file_size = file_info.file_size();
-            result.shape_count = file_info.shape_count();
-            result.schema_version = file_info.schema_version();
-            result.creation_time = file_info.creation_time();
-            
-            spdlog::info("GeometryClient::LoadStepFromData: Successfully loaded {} shapes from data", 
-                        result.shape_ids.size());
+            spdlog::info("GeometryClient::ImportModelFile: Successfully imported {} shapes from {} (format: {})", 
+                        result.shape_ids.size(), file_path, result.detected_format);
         } else {
             result.message = status.ok() ? response.message() : status.error_message();
-            spdlog::error("GeometryClient::LoadStepFromData: Failed - {}", result.message);
+            spdlog::error("GeometryClient::ImportModelFile: Failed - {}", result.message);
         }
         
     } catch (const std::exception& e) {
         result.message = std::string("Exception: ") + e.what();
-        spdlog::error("GeometryClient::LoadStepFromData: Exception: {}", e.what());
+        spdlog::error("GeometryClient::ImportModelFile: Exception: {}", e.what());
     }
     
     return result;
 }
 
-GeometryClient::StepExportResult GeometryClient::ExportStepFile(const std::vector<std::string>& shape_ids, const StepExportOptions& options) {
-    StepExportResult result;
+
+GeometryClient::ModelExportResult GeometryClient::ExportModelFile(const std::vector<std::string>& shape_ids, const ModelExportOptions& options) {
+    ModelExportResult result;
     result.success = false;
     
     if (!connected_) {
-        spdlog::error("GeometryClient::ExportStepFile: Not connected to server");
+        spdlog::error("GeometryClient::ExportModelFile: Not connected to server");
         result.message = "Not connected to server";
         return result;
     }
     
     if (shape_ids.empty()) {
-        spdlog::error("GeometryClient::ExportStepFile: No shape IDs provided");
+        spdlog::error("GeometryClient::ExportModelFile: No shape IDs provided");
         result.message = "No shape IDs provided";
         return result;
     }
     
     try {
-        geometry::StepExportRequest request;
+        geometry::ModelExportRequest request;
         for (const auto& shape_id : shape_ids) {
             request.add_shape_ids(shape_id);
         }
         
         // Set export options
         auto* proto_options = request.mutable_options();
+        proto_options->set_format(options.format);
         proto_options->set_export_colors(options.export_colors);
         proto_options->set_export_names(options.export_names);
-        proto_options->set_export_materials(options.export_materials);
-        proto_options->set_schema_version(options.schema_version);
+        // proto_options->set_export_materials(options.export_materials); // Field removed in simplified proto
+        // proto_options->set_schema_version(options.schema_version); // Field removed in simplified proto
         proto_options->set_units(options.units);
+        // proto_options->set_export_as_compound(options.export_as_compound); // Field removed in simplified proto
+        // proto_options->set_validate_before_export(options.validate_before_export); // Field removed in simplified proto
+        // proto_options->set_precision(options.precision); // Field removed in simplified proto
+        proto_options->set_binary_mode(options.binary_mode);
         
-        geometry::StepFileResponse response;
+        geometry::ModelFileResponse response;
         grpc::ClientContext context;
         
-        grpc::Status status = stub_->ExportStepFile(&context, request, &response);
+        grpc::Status status = stub_->ExportModelFile(&context, request, &response);
         
         if (status.ok() && response.success()) {
             result.success = true;
             result.message = response.message();
-            result.step_data = response.step_data();
+            result.model_data = response.model_data();
             result.filename = response.filename();
             
             // Copy file info
             const auto& file_info = response.file_info();
             result.file_size = file_info.file_size();
             result.shape_count = file_info.shape_count();
-            result.schema_version = file_info.schema_version();
+            result.format = file_info.format();
             result.creation_time = file_info.creation_time();
+            // result.format_version = file_info.format_version(); // Field removed in simplified proto
             
-            spdlog::info("GeometryClient::ExportStepFile: Successfully exported {} shapes, size: {} bytes", 
-                        shape_ids.size(), result.step_data.size());
+            // for (int i = 0; i < file_info.supported_features_size(); ++i) { // Field removed in simplified proto
+            //     result.supported_features.push_back(file_info.supported_features(i));
+            // }
+            
+            spdlog::info("GeometryClient::ExportModelFile: Successfully exported {} shapes to {} format, size: {} bytes", 
+                        shape_ids.size(), options.format, result.model_data.size());
         } else {
             result.message = status.ok() ? response.message() : status.error_message();
-            spdlog::error("GeometryClient::ExportStepFile: Failed - {}", result.message);
+            spdlog::error("GeometryClient::ExportModelFile: Failed - {}", result.message);
         }
         
     } catch (const std::exception& e) {
         result.message = std::string("Exception: ") + e.what();
-        spdlog::error("GeometryClient::ExportStepFile: Exception: {}", e.what());
+        spdlog::error("GeometryClient::ExportModelFile: Exception: {}", e.what());
     }
     
     return result;

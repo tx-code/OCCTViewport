@@ -42,7 +42,6 @@ public:
     // Shape management
     bool DeleteShape(const std::string& shape_id);
     bool SetShapeColor(const std::string& shape_id, double r, double g, double b);
-    std::vector<std::string> ListShapes();
     
     // Scene operations
     bool CreateDemoScene();
@@ -110,74 +109,64 @@ public:
     size_t estimateRequestSize(const std::string& operation_type) const;
     size_t estimateResponseSize(const std::string& operation_type) const;
     
-    // BREP file operations
-    struct BrepImportResult {
-        bool success;
-        std::string message;
-        std::vector<std::string> shape_ids;
-        int64_t file_size;
-        std::string creation_time;
-        std::string format_version;
-    };
 
-    struct BrepExportResult {
-        bool success;
-        std::string message;
-        std::string brep_data;
-        std::string filename;
-        int64_t file_size;
-        std::string creation_time;
-        std::string format_version;
-    };
-
-    BrepImportResult ImportBrepFile(const std::string& file_path, bool merge_shapes = false, bool validate_shapes = true);
-    BrepImportResult LoadBrepFromData(const std::string& brep_data, const std::string& filename = "data.brep", 
-                                     bool merge_shapes = false, bool validate_shapes = true);
-    BrepExportResult ExportBrepFile(const std::vector<std::string>& shape_ids, bool export_as_compound = false, 
-                                   bool validate_before_export = true);
-
-    // STEP file operations
-    struct StepImportOptions {
+    // Unified model file operations
+    struct ModelImportOptions {
+        bool auto_detect_format = true;
+        std::string force_format = "";
         bool import_colors = true;
         bool import_names = true;
         bool import_materials = true;
         double precision = 0.01;
+        bool merge_shapes = false;
+        bool validate_shapes = true;
+        bool heal_shapes = false;
+        double linear_tolerance = 0.01;
+        double angular_tolerance = 0.1;
     };
 
-    struct StepExportOptions {
+    struct ModelExportOptions {
+        std::string format = "STEP";
         bool export_colors = true;
         bool export_names = true;
         bool export_materials = true;
         std::string schema_version = "AP214";
         std::string units = "mm";
+        bool export_as_compound = false;
+        bool validate_before_export = true;
+        double precision = 0.01;
+        bool binary_mode = false;
     };
 
-    struct StepImportResult {
+    struct ModelImportResult {
         bool success;
         std::string message;
         std::vector<std::string> shape_ids;
+        std::string detected_format;
         std::string filename;
         int64_t file_size;
         int32_t shape_count;
-        std::string schema_version;
+        std::string format;
         std::string creation_time;
+        std::string format_version;
+        std::vector<std::string> supported_features;
     };
 
-    struct StepExportResult {
+    struct ModelExportResult {
         bool success;
         std::string message;
-        std::string step_data;
+        std::string model_data;
         std::string filename;
         int64_t file_size;
         int32_t shape_count;
-        std::string schema_version;
+        std::string format;
         std::string creation_time;
+        std::string format_version;
+        std::vector<std::string> supported_features;
     };
 
-    StepImportResult ImportStepFile(const std::string& file_path, const StepImportOptions& options = {});
-    StepImportResult LoadStepFromData(const std::string& step_data, const std::string& filename = "data.step", 
-                                     const StepImportOptions& options = {});
-    StepExportResult ExportStepFile(const std::vector<std::string>& shape_ids, const StepExportOptions& options = {});
+    ModelImportResult ImportModelFile(const std::string& file_path, const ModelImportOptions& options = {});
+    ModelExportResult ExportModelFile(const std::vector<std::string>& shape_ids, const ModelExportOptions& options = {});
 
     // Event handling (for future real-time updates)
     using ShapeUpdateCallback = std::function<void(const std::string& shape_id, const MeshData& mesh_data)>;

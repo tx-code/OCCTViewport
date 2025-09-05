@@ -21,27 +21,14 @@ service GeometryService {
   rpc GetMeshData(ShapeRequest) returns (MeshData);
   rpc GetAllMeshes(EmptyRequest) returns (stream MeshData);
   
-  // Shape query
-  rpc ListShapes(EmptyRequest) returns (ShapeListResponse);
-  rpc GetShapeProperties(ShapeRequest) returns (ShapeProperties);
-  
-  // Real-time updates
-  rpc Subscribe(stream ClientEvent) returns (stream ServerEvent);
-  
   // System operations
   rpc ClearAll(EmptyRequest) returns (StatusResponse);
   rpc GetSystemInfo(EmptyRequest) returns (SystemInfoResponse);
   rpc CreateDemoScene(EmptyRequest) returns (StatusResponse);
   
-  // STEP file operations
-  rpc ImportStepFile(StepFileRequest) returns (StepImportResponse);
-  rpc ExportStepFile(StepExportRequest) returns (StepFileResponse);
-  rpc LoadStepFromData(StepDataRequest) returns (StepImportResponse);
-  
-  // BREP file operations (OCCT native format - more efficient)
-  rpc ImportBrepFile(BrepFileRequest) returns (BrepImportResponse);
-  rpc ExportBrepFile(BrepExportRequest) returns (BrepFileResponse);
-  rpc LoadBrepFromData(BrepDataRequest) returns (BrepImportResponse);
+  // Unified model import/export (supports STEP, IGES, STL, OBJ, BREP, etc.)
+  rpc ImportModelFile(ModelFileRequest) returns (ModelImportResponse);
+  rpc ExportModelFile(ModelExportRequest) returns (ModelFileResponse);
 }
 
 // Request messages for primitive creation
@@ -108,150 +95,60 @@ message StatusResponse {
   string message = 2;
 }
 
-message ShapeListResponse {
-  repeated string shape_ids = 1;
-  int32 total_count = 2;
-}
-
 message SystemInfoResponse {
   string version = 1;
   int32 active_shapes = 2;
   string occt_version = 3;
 }
 
-// Event system for real-time updates
-message ClientEvent {
-  enum EventType {
-    UNKNOWN = 0;
-    MOUSE_MOVE = 1;
-    MOUSE_CLICK = 2;
-    KEYBOARD = 3;
-    VIEWPORT_CHANGE = 4;
-  }
-  
-  EventType type = 1;
-  Point3D position = 2;  // For mouse events
-  string data = 3;       // Additional event data
+// Unified model file operations
+message ModelFileRequest {
+  string file_path = 1;
+  ModelImportOptions options = 2;
 }
 
-message ServerEvent {
-  enum EventType {
-    UNKNOWN = 0;
-    SHAPE_CREATED = 1;
-    SHAPE_UPDATED = 2;
-    SHAPE_DELETED = 3;
-    MESH_UPDATED = 4;
-  }
-  
-  EventType type = 1;
-  string shape_id = 2;
-  MeshData mesh_data = 3;
-  string message = 4;
+message ModelImportOptions {
+  bool auto_detect_format = 1;    // Auto-detect file format
+  string force_format = 2;        // Force specific format (STEP, IGES, STL, OBJ, BREP, etc.)
+  bool import_colors = 3;         // Import colors if available
+  bool import_names = 4;          // Import part names if available
+  double precision = 6;           // Mesh precision (default: 0.01)
+  bool merge_shapes = 7;          // Merge multiple shapes into compound
 }
 
-// STEP file operation messages
-message StepFileRequest {
-  string file_path = 1;           // File path on server
-  StepImportOptions options = 2;  // Import options
-}
-
-message StepDataRequest {
-  bytes step_data = 1;            // Raw STEP file content
-  string filename = 2;            // Original filename for reference
-  StepImportOptions options = 3;  // Import options
-}
-
-message StepImportOptions {
-  bool import_colors = 1;         // Import color information
-  bool import_names = 2;          // Import part names
-  bool import_materials = 3;      // Import material properties
-  double precision = 4;           // Mesh precision (default: 0.1)
-  bool merge_solids = 5;          // Merge multiple solids into one shape
-}
-
-message StepImportResponse {
+message ModelImportResponse {
   bool success = 1;
   string message = 2;
   repeated string shape_ids = 3;  // IDs of created shapes
-  StepFileInfo file_info = 4;     // File metadata
+  ModelFileInfo file_info = 4;
+  string detected_format = 5;     // Auto-detected file format
 }
 
-message StepExportRequest {
-  repeated string shape_ids = 1;  // Shapes to export
-  StepExportOptions options = 2;  // Export options
+message ModelExportRequest {
+  repeated string shape_ids = 1;
+  ModelExportOptions options = 2;
 }
 
-message StepExportOptions {
-  bool export_colors = 1;         // Export color information
-  bool export_names = 2;          // Export part names
-  bool export_materials = 3;      // Export material properties
-  string schema_version = 4;      // STEP schema version (default: "AP214")
-  string units = 5;               // Units (default: "mm")
+message ModelExportOptions {
+  string format = 1;              // Target format (STEP, IGES, STL, OBJ, BREP, etc.)
+  bool export_colors = 2;         // Export colors if supported
+  bool export_names = 3;          // Export part names if supported
+  string units = 6;               // Units (default: "mm")
+  bool binary_mode = 10;          // Use binary format where supported (STL, etc.)
 }
 
-message StepFileResponse {
+message ModelFileResponse {
   bool success = 1;
   string message = 2;
-  bytes step_data = 3;            // Generated STEP file content
+  bytes model_data = 3;           // Generated file content
   string filename = 4;            // Suggested filename
-  StepFileInfo file_info = 5;     // File metadata
+  ModelFileInfo file_info = 5;
 }
 
-message StepFileInfo {
+message ModelFileInfo {
   string filename = 1;
-  int64 file_size = 2;            // File size in bytes
-  int32 shape_count = 3;          // Number of shapes/parts
-  string schema_version = 4;      // STEP schema version
-  string creation_time = 5;       // File creation timestamp
-}
-
-// BREP file operation messages (OCCT native format)
-message BrepFileRequest {
-  string file_path = 1;           // File path on server
-  BrepImportOptions options = 2;  // Import options
-}
-
-message BrepDataRequest {
-  bytes brep_data = 1;            // Raw BREP file content
-  string filename = 2;            // Original filename for reference
-  BrepImportOptions options = 3;  // Import options
-}
-
-message BrepImportOptions {
-  bool merge_shapes = 1;          // Merge multiple shapes into compound
-  bool validate_shapes = 2;       // Validate shape integrity after import
-}
-
-message BrepImportResponse {
-  bool success = 1;
-  string message = 2;
-  repeated string shape_ids = 3;  // IDs of created shapes
-  BrepFileInfo file_info = 4;     // File metadata
-}
-
-message BrepExportRequest {
-  repeated string shape_ids = 1;  // Shapes to export
-  BrepExportOptions options = 2;  // Export options
-}
-
-message BrepExportOptions {
-  bool export_as_compound = 1;    // Export multiple shapes as compound
-  bool validate_before_export = 2; // Validate shapes before export
-  int32 precision_mode = 3;       // Precision mode for export
-}
-
-message BrepFileResponse {
-  bool success = 1;
-  string message = 2;
-  bytes brep_data = 3;            // Generated BREP file content
-  string filename = 4;            // Suggested filename
-  BrepFileInfo file_info = 5;     // File metadata
-}
-
-message BrepFileInfo {
-  string filename = 1;
-  int64 file_size = 2;            // File size in bytes
-  int32 shape_count = 3;          // Number of shapes
-  string creation_time = 4;       // File creation timestamp
-  string format_version = 5;      // BREP format version
+  int64 file_size = 2;
+  int32 shape_count = 3;
+  string format = 4;              // File format (STEP, IGES, STL, BREP, etc.)
+  string creation_time = 5;
 }

@@ -75,6 +75,8 @@
 #include <mutex>
 #include <future>
 #include <cmath>
+#include <algorithm>
+#include <cctype>
 
 // Platform specific includes for Aspect_Window
 #if defined(_WIN32)
@@ -188,6 +190,45 @@ struct OcctRenderClient::ViewInternal {
   // Thread safety for resource management
   std::atomic<bool> isShuttingDown{false};
   mutable std::mutex geometryClientMutex;
+  
+  // Multiple concurrent model import tracking
+  struct ImportTask {
+    std::string id;  // Unique task ID
+    std::string filePath;
+    std::string fileName;  // Just the filename for display
+    std::string format;  // File format (STEP, STL, OBJ, etc.)
+    std::future<GeometryClient::ModelImportResult> future;
+    std::atomic<float> progress{0.0f};  // Progress 0.0 - 1.0
+    std::atomic<bool> isActive{true};
+    std::string statusMessage;
+    std::chrono::time_point<std::chrono::steady_clock> startTime;
+    
+    ImportTask(const std::string& path) 
+      : filePath(path), 
+        startTime(std::chrono::steady_clock::now()) {
+      // Generate unique ID based on timestamp and path
+      auto now = std::chrono::system_clock::now().time_since_epoch().count();
+      id = std::to_string(now) + "_" + std::to_string(std::hash<std::string>{}(path));
+      
+      // Extract filename and format
+      size_t lastSlash = path.find_last_of("/\\");
+      fileName = (lastSlash != std::string::npos) ? path.substr(lastSlash + 1) : path;
+      
+      size_t lastDot = fileName.find_last_of(".");
+      if (lastDot != std::string::npos) {
+        format = fileName.substr(lastDot + 1);
+        std::transform(format.begin(), format.end(), format.begin(), ::toupper);
+      }
+    }
+  };
+  
+  std::vector<std::shared_ptr<ImportTask>> importTasks;
+  std::mutex importTasksMutex;
+  
+  // Legacy single import dialog (kept for compatibility)
+  bool showModelProgressDialog{false};
+  std::string modelImportFilePath;
+  std::string importStatusMessage;
 };
 
 namespace { // Anonymous namespace for static helper functions from original
@@ -814,41 +855,22 @@ void OcctRenderClient::renderGui() {
       ImGui::Separator();
       
       if (isConnected) {
-        // Geometry operations
-        ImGui::Text("Geometry Operations");
+        // File operations
+        ImGui::Text("File Operations");
         
-        if (ImGui::Button("Create Random Box")) {
-          spdlog::info("gRPC Control Panel: User clicked Create Random Box button");
+        if (ImGui::Button("Import Model")) {
+          spdlog::info("gRPC Control Panel: User clicked Import Model button");
           try {
-            createRandomBox();
-            spdlog::info("gRPC Control Panel: Create Random Box completed successfully");
+            importModelFile();
+            spdlog::info("gRPC Control Panel: Import Model File completed");
           } catch (const std::exception& e) {
-            spdlog::error("gRPC Control Panel: Create Random Box failed: {}", e.what());
+            spdlog::error("gRPC Control Panel: Import Model File failed: {}", e.what());
           }
         }
+        
         ImGui::SameLine();
-        if (ImGui::Button("Create Random Cone")) {
-          spdlog::info("gRPC Control Panel: User clicked Create Random Cone button");
-          try {
-            createRandomCone();
-            spdlog::info("gRPC Control Panel: Create Random Cone completed successfully");
-          } catch (const std::exception& e) {
-            spdlog::error("gRPC Control Panel: Create Random Cone failed: {}", e.what());
-          }
-        }
-        
-        if (ImGui::Button("Create Demo Scene")) {
-          spdlog::info("gRPC Control Panel: User clicked Create Demo Scene button");
-          try {
-            createDemoScene();
-            spdlog::info("gRPC Control Panel: Create Demo Scene completed successfully");
-          } catch (const std::exception& e) {
-            spdlog::error("gRPC Control Panel: Create Demo Scene failed: {}", e.what());
-          }
-        }
-        
-        if (ImGui::Button("Clear All Shapes")) {
-          spdlog::info("gRPC Control Panel: User clicked Clear All Shapes button");
+        if (ImGui::Button("Clear All")) {
+          spdlog::info("gRPC Control Panel: User clicked Clear All button");
           try {
             clearAllShapes();
             spdlog::info("gRPC Control Panel: Clear All Shapes completed successfully");
@@ -857,23 +879,64 @@ void OcctRenderClient::renderGui() {
           }
         }
         
-        ImGui::Separator();
-        
-        // Mesh operations
-        ImGui::Text("Mesh Operations");
-        
-        if (ImGui::Button("Refresh Meshes")) {
-          spdlog::info("gRPC Control Panel: User clicked Refresh Meshes button");
-          try {
-            refreshMeshes();
-            spdlog::info("gRPC Control Panel: Refresh Meshes completed successfully");
-          } catch (const std::exception& e) {
-            spdlog::error("gRPC Control Panel: Refresh Meshes failed: {}", e.what());
-          }
-        }
-        
         if (ImGui::Checkbox("Auto Refresh", &internal_->autoRefreshMeshes)) {
           spdlog::info("gRPC Control Panel: Auto Refresh toggled to: {}", internal_->autoRefreshMeshes ? "ON" : "OFF");
+        }
+        
+        // Display import progress bars for active tasks
+        {
+          std::lock_guard<std::mutex> lock(internal_->importTasksMutex);
+          if (!internal_->importTasks.empty()) {
+            ImGui::Separator();
+            ImGui::Text("Import Progress:");
+            
+            // Clean up completed tasks that have been displayed for more than 3 seconds
+            auto now = std::chrono::steady_clock::now();
+            internal_->importTasks.erase(
+              std::remove_if(internal_->importTasks.begin(), internal_->importTasks.end(),
+                [&now](const std::shared_ptr<ViewInternal::ImportTask>& task) {
+                  if (!task->isActive.load() && task->progress.load() >= 1.0f) {
+                    auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - task->startTime).count();
+                    return elapsed > 3; // Remove completed tasks after 3 seconds
+                  }
+                  return false;
+                }),
+              internal_->importTasks.end());
+            
+            // Display each active import task
+            for (const auto& task : internal_->importTasks) {
+              ImGui::PushID(task->id.c_str());
+              
+              // Display filename and format
+              ImGui::Text("%s [%s]", task->fileName.c_str(), task->format.c_str());
+              
+              // Progress bar
+              float progress = task->progress.load();
+              ImGui::ProgressBar(progress, ImVec2(-1, 0));
+              
+              // Status text
+              if (!task->statusMessage.empty()) {
+                ImGui::TextDisabled("%s", task->statusMessage.c_str());
+              }
+              
+              // Show elapsed time
+              auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - task->startTime).count();
+              ImGui::TextDisabled("Time: %llds", elapsed);
+              
+              // Cancel button for active tasks
+              if (task->isActive.load() && progress < 1.0f) {
+                ImGui::SameLine();
+                if (ImGui::SmallButton("Cancel")) {
+                  task->isActive.store(false);
+                  task->statusMessage = "Cancelled by user";
+                  spdlog::info("gRPC Control Panel: Import task {} cancelled", task->fileName);
+                }
+              }
+              
+              ImGui::PopID();
+              ImGui::Spacing();
+            }
+          }
         }
         
         ImGui::Separator();
@@ -1030,6 +1093,14 @@ void OcctRenderClient::renderGui() {
     }
   }
   ImGui::End();
+
+  // Legacy model import progress dialog - now replaced by progress bars in gRPC Panel
+  // Keeping the code commented for reference
+  /*
+  if (internal_->showModelProgressDialog) {
+    // Old progress dialog code - replaced by gRPC Panel progress bars
+  }
+  */
 
   ImGui::Render();
   ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
@@ -1270,6 +1341,40 @@ void OcctRenderClient::mainloop() {
     if (!internal_->view.IsNull()) {
       // No need to invalidate the immediate layer each frame
       FlushViewEvents(internal_->context, internal_->view, Standard_True);
+      
+      // Check if any async model imports have completed
+      {
+        std::lock_guard<std::mutex> lock(internal_->importTasksMutex);
+        for (auto& task : internal_->importTasks) {
+          if (task->isActive.load() && task->future.valid()) {
+            if (task->future.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready) {
+              try {
+                auto result = task->future.get();
+                
+                if (result.success) {
+                  task->progress.store(1.0f);
+                  task->statusMessage = "Import completed: " + std::to_string(result.shape_ids.size()) + " shapes";
+                  task->isActive.store(false);
+                  spdlog::info("Model import completed successfully for {}. {} shapes imported.", 
+                              task->fileName, result.shape_ids.size());
+                  refreshMeshes();
+                } else {
+                  task->progress.store(1.0f);
+                  task->statusMessage = "Import failed: " + result.message;
+                  task->isActive.store(false);
+                  spdlog::error("Model import failed for {}: {}", task->fileName, result.message);
+                }
+              } catch (const std::exception& e) {
+                task->progress.store(1.0f);
+                task->statusMessage = "Error: " + std::string(e.what());
+                task->isActive.store(false);
+                spdlog::error("Model import async error for {}: {}", task->fileName, e.what());
+              }
+            }
+          }
+        }
+      }
+      
       renderGui();
     }
   }
@@ -1871,6 +1976,254 @@ void OcctRenderClient::clearAllShapes() {
   } catch (const std::exception& e) {
     spdlog::error("OcctRenderClient::clearAllShapes(): Error: {}", e.what());
   }
+}
+
+void OcctRenderClient::importStepFile() {
+  if (!internal_->geometryClient || !internal_->geometryClient->IsConnected()) {
+    spdlog::warn("OcctRenderClient::importStepFile(): Geometry client not connected");
+    return;
+  }
+
+  // No longer check if already importing - support multiple concurrent imports
+
+  // Initialize NFD if not already initialized
+  if (NFD_Init() != NFD_OKAY) {
+    spdlog::error("OcctRenderClient::importStepFile(): Failed to initialize NFD: {}", NFD_GetError());
+    return;
+  }
+
+  // Open file dialog to select STEP file
+  nfdchar_t* outPath = nullptr;
+  nfdfilteritem_t filterItem[2] = { { "STEP", "step,stp" }, { "All Files", "*" } };
+  
+  nfdresult_t result = NFD_OpenDialog(&outPath, filterItem, 2, nullptr);
+  
+  if (result == NFD_OKAY) {
+    std::string filePath(outPath);
+    internal_->modelImportFilePath = filePath;
+    
+    // Free the path memory allocated by NFD
+    NFD_FreePath(outPath);
+    
+    try {
+      spdlog::info("OcctRenderClient: Starting async STEP file import: {}", filePath);
+      
+      // Create a new import task for STEP file
+      auto task = std::make_shared<ViewInternal::ImportTask>(filePath);
+      task->statusMessage = "Starting STEP import...";
+      task->progress.store(0.1f);
+      
+      // Add task to the list
+      {
+        std::lock_guard<std::mutex> lock(internal_->importTasksMutex);
+        internal_->importTasks.push_back(task);
+      }
+      
+      // Launch async import with progress updates
+      task->future = std::async(std::launch::async, [this, task, filePath]() {
+        task->progress.store(0.2f);
+        task->statusMessage = "Loading STEP file...";
+        
+        if (internal_->geometryClient) {
+          // Use unified import with STEP-specific options
+          GeometryClient::ModelImportOptions options;
+          options.force_format = "STEP"; // Force STEP format
+          options.import_colors = true;
+          options.import_names = true;
+          
+          task->progress.store(0.3f);
+          task->statusMessage = "Processing STEP geometry...";
+          
+          auto result = internal_->geometryClient->ImportModelFile(filePath, options);
+          
+          if (result.success) {
+            task->progress.store(0.8f);
+            task->statusMessage = "STEP import successful";
+          } else {
+            task->progress.store(1.0f);
+            task->statusMessage = "STEP import failed: " + result.message;
+            task->isActive.store(false);
+          }
+          
+          return result;
+        } else {
+          GeometryClient::ModelImportResult result;
+          result.success = false;
+          result.message = "Geometry client is null";
+          task->progress.store(1.0f);
+          task->statusMessage = "Error: No connection";
+          task->isActive.store(false);
+          return result;
+        }
+      });
+      
+    } catch (const std::exception& e) {
+      spdlog::error("OcctRenderClient::importStepFile(): Error starting async import: {}", e.what());
+      // Clean up task if error occurred
+      {
+        std::lock_guard<std::mutex> lock(internal_->importTasksMutex);
+        if (!internal_->importTasks.empty()) {
+          auto& lastTask = internal_->importTasks.back();
+          if (lastTask->filePath == filePath) {
+            lastTask->progress.store(1.0f);
+            lastTask->statusMessage = "Error: " + std::string(e.what());
+            lastTask->isActive.store(false);
+          }
+        }
+      }
+    }
+  } else if (result == NFD_CANCEL) {
+    spdlog::info("OcctRenderClient::importStepFile(): File selection cancelled by user");
+  } else {
+    spdlog::error("OcctRenderClient::importStepFile(): File dialog error: {}", NFD_GetError());
+  }
+  
+  // Clean up NFD
+  NFD_Quit();
+}
+
+void OcctRenderClient::importModelFile() {
+  if (!internal_->geometryClient || !internal_->geometryClient->IsConnected()) {
+    spdlog::warn("OcctRenderClient::importModelFile(): Geometry client not connected");
+    return;
+  }
+
+  // No longer check if already importing - support multiple concurrent imports
+
+  // Initialize NFD if not already initialized
+  if (NFD_Init() != NFD_OKAY) {
+    spdlog::error("OcctRenderClient::importModelFile(): Failed to initialize NFD: {}", NFD_GetError());
+    return;
+  }
+
+  // Open file dialog to select model files (supports multiple selection)
+  // OCCT 7.9 supports: STEP, IGES, STL, OBJ, VRML, BREP and more
+  const nfdpathset_t* outPaths = nullptr;
+  nfdfilteritem_t filterItem[] = { 
+    { "All Supported", "step,stp,iges,igs,stl,obj,wrl,vrml,brep,brp" },
+    { "STEP", "step,stp" },
+    { "IGES", "iges,igs" },
+    { "STL", "stl" },
+    { "OBJ", "obj" },
+    { "VRML", "wrl,vrml" },
+    { "BREP", "brep,brp" },
+    { "All Files", "*" }
+  };
+  
+  // Use NFD_OpenDialogMultiple for multi-select support
+  nfdresult_t result = NFD_OpenDialogMultiple(&outPaths, filterItem, 8, nullptr);
+  
+  if (result == NFD_OKAY) {
+    // Get the number of selected files
+    nfdpathsetsize_t pathCount;
+    NFD_PathSet_GetCount(outPaths, &pathCount);
+    
+    spdlog::info("OcctRenderClient: User selected {} file(s) for import", pathCount);
+    
+    // Process each selected file
+    for (nfdpathsetsize_t i = 0; i < pathCount; ++i) {
+      nfdchar_t* path = nullptr;
+      NFD_PathSet_GetPath(outPaths, i, &path);
+      std::string filePath(path);
+      NFD_PathSet_FreePath(path);
+      
+      // Determine file extension
+      std::string extension = "";
+      size_t dotPos = filePath.find_last_of(".");
+      if (dotPos != std::string::npos) {
+        extension = filePath.substr(dotPos + 1);
+        std::transform(extension.begin(), extension.end(), extension.begin(), ::tolower);
+      }
+      
+      // Store the first file path for legacy compatibility
+      if (i == 0) {
+        internal_->modelImportFilePath = filePath;
+      }
+    
+      try {
+        spdlog::info("OcctRenderClient: Starting async model file import: {} (type: {})", filePath, extension);
+        
+        // Create a new import task
+        auto task = std::make_shared<ViewInternal::ImportTask>(filePath);
+        task->statusMessage = "Starting import...";
+        task->progress.store(0.1f); // Initial progress
+        
+        // Add task to the list
+        {
+          std::lock_guard<std::mutex> lock(internal_->importTasksMutex);
+          internal_->importTasks.push_back(task);
+        }
+        
+        // Launch async import with progress updates
+        task->future = std::async(std::launch::async, [this, task, filePath]() {
+        // Update progress during import
+        task->progress.store(0.2f);
+        task->statusMessage = "Connecting to server...";
+        
+        if (internal_->geometryClient) {
+          // Create import options with auto-detection
+          GeometryClient::ModelImportOptions options;
+          options.auto_detect_format = true; // Let server detect format
+          options.import_colors = true; // Try to read colors if available
+          options.import_names = true;  // Try to read object names if available
+          
+          // Update status
+          task->progress.store(0.3f);
+          task->statusMessage = "Uploading file to server...";
+          
+          // Call the unified import method
+          auto result = internal_->geometryClient->ImportModelFile(filePath, options);
+          
+          // Update progress based on result
+          if (result.success) {
+            task->progress.store(0.8f);
+            task->statusMessage = "Import successful, loading meshes...";
+          } else {
+            task->progress.store(1.0f);
+            task->statusMessage = "Import failed: " + result.message;
+            task->isActive.store(false);
+          }
+          
+          return result;
+        } else {
+          spdlog::error("OcctRenderClient: Geometry client is null");
+          GeometryClient::ModelImportResult result;
+          result.success = false;
+          result.message = "Geometry client is null";
+          task->progress.store(1.0f);
+          task->statusMessage = "Error: No connection to server";
+          task->isActive.store(false);
+          return result;
+        }
+        });
+        
+      } catch (const std::exception& e) {
+        spdlog::error("OcctRenderClient::importModelFile(): Error starting async import for {}: {}", filePath, e.what());
+        // Clean up any task we might have created
+        {
+          std::lock_guard<std::mutex> lock(internal_->importTasksMutex);
+          if (!internal_->importTasks.empty()) {
+            auto& lastTask = internal_->importTasks.back();
+            if (lastTask->filePath == filePath) {
+              lastTask->progress.store(1.0f);
+              lastTask->statusMessage = "Error: " + std::string(e.what());
+              lastTask->isActive.store(false);
+            }
+          }
+        }
+      }
+    } // End of for loop processing each selected file
+    
+    // Free the path set
+    NFD_PathSet_Free(outPaths);
+  } else if (result == NFD_CANCEL) {
+    spdlog::info("OcctRenderClient::importModelFile(): File selection cancelled by user");
+  } else {
+    spdlog::error("OcctRenderClient::importModelFile(): File dialog error: {}", NFD_GetError());
+  }
+  
+  // Clean up NFD
+  NFD_Quit();
 }
 
 // Template method addMeshAsAisShape is now implemented in the header file

@@ -68,18 +68,6 @@ public:
                              const geometry::EmptyRequest* request,
                              grpc::ServerWriter<geometry::MeshData>* writer) override;
 
-    // Shape query
-    grpc::Status ListShapes(grpc::ServerContext* context,
-                           const geometry::EmptyRequest* request,
-                           geometry::ShapeListResponse* response) override;
-
-    grpc::Status GetShapeProperties(grpc::ServerContext* context,
-                                   const geometry::ShapeRequest* request,
-                                   geometry::ShapeProperties* response) override;
-
-    // Real-time updates
-    grpc::Status Subscribe(grpc::ServerContext* context,
-                          grpc::ServerReaderWriter<geometry::ServerEvent, geometry::ClientEvent>* stream) override;
 
     // System operations
     grpc::Status ClearAll(grpc::ServerContext* context,
@@ -94,31 +82,18 @@ public:
                                const geometry::EmptyRequest* request,
                                geometry::StatusResponse* response) override;
 
-    // STEP file operations
-    grpc::Status ImportStepFile(grpc::ServerContext* context,
-                               const geometry::StepFileRequest* request,
-                               geometry::StepImportResponse* response) override;
+    // Legacy STEP/BREP operations removed - use unified ImportModelFile/ExportModelFile
 
-    grpc::Status ExportStepFile(grpc::ServerContext* context,
-                               const geometry::StepExportRequest* request,
-                               geometry::StepFileResponse* response) override;
+    // Unified model file operations
+    grpc::Status ImportModelFile(grpc::ServerContext* context,
+                                const geometry::ModelFileRequest* request,
+                                geometry::ModelImportResponse* response) override;
 
-    grpc::Status LoadStepFromData(grpc::ServerContext* context,
-                                 const geometry::StepDataRequest* request,
-                                 geometry::StepImportResponse* response) override;
+    grpc::Status ExportModelFile(grpc::ServerContext* context,
+                                const geometry::ModelExportRequest* request,
+                                geometry::ModelFileResponse* response) override;
 
-    // BREP file operations
-    grpc::Status ImportBrepFile(grpc::ServerContext* context,
-                               const geometry::BrepFileRequest* request,
-                               geometry::BrepImportResponse* response) override;
-
-    grpc::Status ExportBrepFile(grpc::ServerContext* context,
-                               const geometry::BrepExportRequest* request,
-                               geometry::BrepFileResponse* response) override;
-
-    grpc::Status LoadBrepFromData(grpc::ServerContext* context,
-                                 const geometry::BrepDataRequest* request,
-                                 geometry::BrepImportResponse* response) override;
+    // LoadModelFromData removed - not needed for current implementation
 
 private:
     struct ShapeData {
@@ -149,33 +124,39 @@ private:
     gp_Vec fromProtoVector(const geometry::Vector3D& vector);
     Quantity_Color fromProtoColor(const geometry::Color& color);
 
-    // STEP file helper methods
-    std::vector<std::string> importStepFileInternal(const std::string& file_path,
-                                                   const geometry::StepImportOptions& options);
-    std::vector<std::string> importStepDataInternal(const std::string& step_data,
-                                                   const std::string& filename,
-                                                   const geometry::StepImportOptions& options);
-    bool exportStepFileInternal(const std::vector<std::string>& shape_ids,
-                               const geometry::StepExportOptions& options,
-                               std::string& step_data,
-                               geometry::StepFileInfo& file_info);
-    geometry::StepFileInfo getStepFileInfo(const std::string& filename,
-                                          const std::string& step_data,
-                                          int shape_count);
-
-    // BREP file helper methods
-    std::vector<std::string> importBrepFileInternal(const std::string& file_path,
-                                                   const geometry::BrepImportOptions& options);
-    std::vector<std::string> importBrepDataInternal(const std::string& brep_data,
-                                                   const std::string& filename,
-                                                   const geometry::BrepImportOptions& options);
-    bool exportBrepFileInternal(const std::vector<std::string>& shape_ids,
-                               const geometry::BrepExportOptions& options,
-                               std::string& brep_data,
-                               geometry::BrepFileInfo& file_info);
-    geometry::BrepFileInfo getBrepFileInfo(const std::string& filename,
-                                          const std::string& brep_data,
-                                          int shape_count);
+    // Unified model file helper methods
+    std::vector<std::string> importModelFileInternal(const std::string& file_path,
+                                                     const geometry::ModelImportOptions& options);
+    std::vector<std::string> importModelDataInternal(const std::string& model_data,
+                                                     const std::string& filename,
+                                                     const geometry::ModelImportOptions& options);
+    bool exportModelFileInternal(const std::vector<std::string>& shape_ids,
+                                const geometry::ModelExportOptions& options,
+                                std::string& model_data,
+                                geometry::ModelFileInfo& file_info);
+    geometry::ModelFileInfo getModelFileInfo(const std::string& filename,
+                                            const std::string& model_data,
+                                            int shape_count,
+                                            const std::string& format);
+    std::string detectFileFormat(const std::string& file_path, const std::string& force_format);
+    std::string detectFormatFromExtension(const std::string& filename);
+    std::string detectFormatFromContent(const std::string& content);
+    
+    // Format-specific import methods
+    std::vector<std::string> importModelFileInternal_FormatSpecific(const std::string& file_path,
+                                                                   const std::string& format,
+                                                                   const geometry::ModelImportOptions& options);
+    std::vector<std::string> importStlFileInternal(const std::string& file_path,
+                                                   const geometry::ModelImportOptions& options);
+    std::vector<std::string> importIgesFileInternal(const std::string& file_path,
+                                                    const geometry::ModelImportOptions& options);
+    std::vector<std::string> importObjFileInternal(const std::string& file_path,
+                                                   const geometry::ModelImportOptions& options);
+    std::vector<std::string> importPlyFileInternal(const std::string& file_path,
+                                                   const geometry::ModelImportOptions& options);
+    std::vector<std::string> importGltfFileInternal(const std::string& file_path,
+                                                    const geometry::ModelImportOptions& options);
+    
 
     // Internal data
     std::unordered_map<std::string, ShapeData> shapes_;

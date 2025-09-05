@@ -41,6 +41,7 @@
 #include <BRepBuilderAPI_MakeFace.hxx> // For creating faces from triangulation
 #include <memory> // For std::unique_ptr
 #include <spdlog/spdlog.h> // For logging
+#include <nfd.h> // Native File Dialog for file selection
 
 // Forward declarations
 struct GLFWwindow;
@@ -84,6 +85,12 @@ public:
   void createDemoScene();
   void refreshMeshes();
   void clearAllShapes();
+  
+  //! STEP file import
+  void importStepFile();
+  
+  //! Import model files (STEP, IGES, STL, OBJ, VRML, etc.)
+  void importModelFile();
 
 protected:
   //! Initialize OCCT Rendering System.
