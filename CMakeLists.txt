@@ -203,6 +203,12 @@ target_sources(OcctImgui_OcctClient
         src/client/occt/OcctRenderClient.h
         src/client/ui/grpc_performance_panel.cpp
         src/client/ui/grpc_performance_panel.h
+        src/client/ui/console_panel.cpp
+        src/client/ui/console_panel.h
+        src/client/ui/logger_manager.cpp
+        src/client/ui/logger_manager.h
+        src/client/ui/console_sink.h
+        src/client/ui/console_sink_impl.h
 )
 
 target_include_directories(OcctImgui_OcctClient

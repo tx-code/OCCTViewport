@@ -51,6 +51,7 @@ class AIS_InteractiveObject;
 
 class GeometryClient;
 class GrpcPerformancePanel;
+class ConsolePanel;
 
 // Using protected inheritance because:
 // Public members from AIS_ViewController become protected in OcctRenderClient

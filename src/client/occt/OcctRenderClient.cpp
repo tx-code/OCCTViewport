@@ -23,6 +23,8 @@
 #include "OcctRenderClient.h"
 #include "../grpc/geometry_client.h"
 #include "../ui/grpc_performance_panel.h"
+#include "../ui/console_panel.h"
+#include "../ui/logger_manager.h"
 
 // ImGui
 #include <imgui.h>
@@ -159,11 +161,13 @@ struct OcctRenderClient::ViewInternal {
   // UI state for gRPC integration
   bool showGrpcControlPanel{true};
   bool showGrpcPerformancePanel{false};
+  bool showConsole{false};
   bool autoRefreshMeshes{false};
   float lastRefreshTime{0.0f};
   
-  // Performance monitoring panel
+  // UI panels
   std::unique_ptr<GrpcPerformancePanel> performancePanel;
+  std::shared_ptr<ConsolePanel> console;
   
   // Cache for system info to avoid excessive network calls
   GeometryClient::SystemInfo cachedSystemInfo;
@@ -327,6 +331,9 @@ OcctRenderClient::OcctRenderClient(GLFWwindow *aGlfwWindow) {
 }
 
 OcctRenderClient::~OcctRenderClient() {
+  // Shutdown logger manager before destroying console panel
+  LoggerManager::shutdown();
+  
   // std::unique_ptr<ViewInternal> internal_ will be automatically destroyed.
 }
 
@@ -981,6 +988,12 @@ void OcctRenderClient::renderGui() {
         if (ImGui::Checkbox("Show Performance Panel", &internal_->showGrpcPerformancePanel)) {
           spdlog::info("gRPC Control Panel: Performance Panel toggled to: {}", internal_->showGrpcPerformancePanel ? "ON" : "OFF");
         }
+        
+        // Debug tools
+        ImGui::Text("Debug Tools");
+        if (ImGui::Checkbox("Show Console", &internal_->showConsole)) {
+          spdlog::info("gRPC Control Panel: Console toggled to: {}", internal_->showConsole ? "ON" : "OFF");
+        }
       }
     }
     ImGui::End();
@@ -992,6 +1005,14 @@ void OcctRenderClient::renderGui() {
     internal_->performancePanel->render();
   } else if (internal_->performancePanel) {
     internal_->performancePanel->setVisible(false);
+  }
+
+  // Console Panel Window
+  if (internal_->showConsole && internal_->console) {
+    internal_->console->setVisible(true);
+    internal_->console->render();
+  } else if (internal_->console) {
+    internal_->console->setVisible(false);
   }
 
   // OCCT Viewport Window - ensure it stays docked
@@ -1703,6 +1724,13 @@ bool OcctRenderClient::initGeometryClient() {
       internal_->performancePanel = std::make_unique<GrpcPerformancePanel>(sharedClient);
     }
     
+    // Create console panel if not exists
+    if (!internal_->console) {
+      internal_->console = std::make_shared<ConsolePanel>();
+      // Initialize logger with console panel integration
+      LoggerManager::initializeWithConsole(internal_->console);
+    }
+    
     // Ensure we're back to our OpenGL context before proceeding
     if (currentContext && currentContext == internal_->glfwWindow) {
       glfwMakeContextCurrent(internal_->glfwWindow);
@@ -1773,6 +1801,13 @@ void OcctRenderClient::startAsyncConnection() {
           // Empty deleter since the unique_ptr will manage the lifetime
         });
         internal_->performancePanel = std::make_unique<GrpcPerformancePanel>(sharedClient);
+      }
+      
+      // Create console panel if not exists
+      if (!internal_->console) {
+        internal_->console = std::make_shared<ConsolePanel>();
+        // Initialize logger with console panel integration
+        LoggerManager::initializeWithConsole(internal_->console);
       }
       
       // Attempt connection
