@@ -8,3 +8,9 @@ CMakeUserPresets.json
 *.bat
 imgui.ini
 nul
+
+# Python client files
+clients/python/__pycache__/
+clients/python/generated/
+clients/python/*.pyc
+clients/python/exported.*

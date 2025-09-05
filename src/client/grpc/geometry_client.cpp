@@ -3,9 +3,9 @@
 #include <spdlog/spdlog.h>
 #include <chrono>
 
-GeometryClient::GeometryClient(const std::string& server_address) 
-    : server_address_(server_address), connected_(false) {
-    spdlog::info("GeometryClient: Initializing client for server: {}", server_address_);
+GeometryClient::GeometryClient(const std::string& server_address, const std::string& client_id) 
+    : server_address_(server_address), client_id_(client_id), connected_(false) {
+    spdlog::info("GeometryClient: Initializing client '{}' for server: {}", client_id_, server_address_);
 }
 
 GeometryClient::~GeometryClient() {
@@ -30,6 +30,8 @@ bool GeometryClient::Connect() {
         geometry::EmptyRequest request;
         geometry::SystemInfoResponse response;
         grpc::ClientContext context;
+        AddClientMetadata(context);
+        AddClientMetadata(context);
         
         // Set a 2-second timeout for connection test
         std::chrono::system_clock::time_point deadline =
@@ -61,6 +63,9 @@ void GeometryClient::Disconnect() {
     if (connected_) {
         spdlog::info("GeometryClient: Disconnecting from server");
         try {
+            // Notify server before disconnecting
+            DisconnectFromServer();
+            
             // Set connected flag first to prevent new operations
             connected_ = false;
             
@@ -78,6 +83,35 @@ void GeometryClient::Disconnect() {
         } catch (...) {
             spdlog::warn("GeometryClient: Unknown exception during disconnect");
         }
+    }
+}
+
+bool GeometryClient::DisconnectFromServer() {
+    if (!connected_ || !stub_) {
+        spdlog::warn("GeometryClient::DisconnectFromServer: Not connected to server");
+        return false;
+    }
+
+    try {
+        grpc::ClientContext context;
+        AddClientMetadata(context);
+
+        geometry::EmptyRequest request;
+        geometry::StatusResponse response;
+
+        auto status = stub_->DisconnectClient(&context, request, &response);
+        
+        if (status.ok() && response.success()) {
+            spdlog::info("GeometryClient: Successfully notified server of disconnection: {}", response.message());
+            return true;
+        } else {
+            spdlog::warn("GeometryClient: Failed to notify server of disconnection: {} ({})", 
+                        response.message(), status.error_message());
+            return false;
+        }
+    } catch (const std::exception& e) {
+        spdlog::error("GeometryClient::DisconnectFromServer: Exception: {}", e.what());
+        return false;
     }
 }
 
@@ -105,6 +139,7 @@ std::string GeometryClient::CreateBox(double x, double y, double z,
         
         geometry::ShapeResponse response;
         grpc::ClientContext context;
+        AddClientMetadata(context);
         
         grpc::Status status = stub_->CreateBox(&context, request, &response);
         
@@ -144,6 +179,7 @@ std::string GeometryClient::CreateCone(double x, double y, double z,
         
         geometry::ShapeResponse response;
         grpc::ClientContext context;
+        AddClientMetadata(context);
         
         grpc::Status status = stub_->CreateCone(&context, request, &response);
         
@@ -172,6 +208,7 @@ bool GeometryClient::CreateDemoScene() {
         geometry::EmptyRequest request;
         geometry::StatusResponse response;
         grpc::ClientContext context;
+        AddClientMetadata(context);
         
         grpc::Status status = stub_->CreateDemoScene(&context, request, &response);
         
@@ -200,6 +237,7 @@ bool GeometryClient::ClearAll() {
         geometry::EmptyRequest request;
         geometry::StatusResponse response;
         grpc::ClientContext context;
+        AddClientMetadata(context);
         
         grpc::Status status = stub_->ClearAll(&context, request, &response);
         
@@ -233,6 +271,7 @@ GeometryClient::SystemInfo GeometryClient::GetSystemInfo() {
         geometry::EmptyRequest request;
         geometry::SystemInfoResponse response;
         grpc::ClientContext context;
+        AddClientMetadata(context);
         
         grpc::Status status = stub_->GetSystemInfo(&context, request, &response);
         
@@ -296,6 +335,7 @@ std::string GeometryClient::CreateSphere(double x, double y, double z, double ra
         
         geometry::ShapeResponse response;
         grpc::ClientContext context;
+        AddClientMetadata(context);
         
         grpc::Status status = stub_->CreateSphere(&context, request, &response);
         
@@ -332,6 +372,7 @@ std::string GeometryClient::CreateCylinder(double x, double y, double z, double 
         
         geometry::ShapeResponse response;
         grpc::ClientContext context;
+        AddClientMetadata(context);
         
         grpc::Status status = stub_->CreateCylinder(&context, request, &response);
         
@@ -374,6 +415,7 @@ std::vector<GeometryClient::MeshData> GeometryClient::GetAllMeshes() {
     try {
         geometry::EmptyRequest request;
         grpc::ClientContext context;
+        AddClientMetadata(context);
         
         std::unique_ptr<grpc::ClientReader<geometry::MeshData>> reader = 
             stub_->GetAllMeshes(&context, request);
@@ -427,6 +469,7 @@ GeometryClient::MeshData GeometryClient::GetMeshData(const std::string& shape_id
         request.set_shape_id(shape_id);
         geometry::MeshData response;
         grpc::ClientContext context;
+        AddClientMetadata(context);
         
         grpc::Status status = stub_->GetMeshData(&context, request, &response);
         
@@ -498,6 +541,11 @@ void GeometryClient::SetShapeUpdateCallback(ShapeUpdateCallback callback) {
     update_callback_ = std::move(callback);
 }
 
+void GeometryClient::AddClientMetadata(grpc::ClientContext& context) const {
+    // Add client ID to metadata so server can identify the client
+    context.AddMetadata("client-id", client_id_);
+}
+
 
 // Unified model file operations implementation
 
@@ -531,6 +579,7 @@ GeometryClient::ModelImportResult GeometryClient::ImportModelFile(const std::str
         
         geometry::ModelImportResponse response;
         grpc::ClientContext context;
+        AddClientMetadata(context);
         
         grpc::Status status = stub_->ImportModelFile(&context, request, &response);
         
@@ -611,6 +660,7 @@ GeometryClient::ModelExportResult GeometryClient::ExportModelFile(const std::vec
         
         geometry::ModelFileResponse response;
         grpc::ClientContext context;
+        AddClientMetadata(context);
         
         grpc::Status status = stub_->ExportModelFile(&context, request, &response);
         

@@ -128,6 +128,13 @@ The `tests/test_data/models/` directory contains test models:
 3. Add client method in `geometry_client.cpp`
 4. Update UI in `OcctRenderClient.cpp` if needed
 
+### Multi-Client Session Management
+- Client identification via gRPC metadata (`client-id`)
+- Complete session isolation (each client has independent shape storage)
+- Client disconnect notifications (`DisconnectClient` RPC)
+- Thread-safe session management with mutex protection
+- Automatic inactive session cleanup (5-minute timeout)
+
 ### Connection Management
 - Auto-reconnect every 10 seconds when disconnected
 - Async connection to prevent UI freezing

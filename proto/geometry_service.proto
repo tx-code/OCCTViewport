@@ -29,6 +29,9 @@ service GeometryService {
   // Unified model import/export (supports STEP, IGES, STL, OBJ, BREP, etc.)
   rpc ImportModelFile(ModelFileRequest) returns (ModelImportResponse);
   rpc ExportModelFile(ModelExportRequest) returns (ModelFileResponse);
+  
+  // Client session management
+  rpc DisconnectClient(EmptyRequest) returns (StatusResponse);
 }
 
 // Request messages for primitive creation

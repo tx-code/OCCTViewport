@@ -1,0 +1,17 @@
+# Generated proto files
+generated/
+__pycache__/
+*.pyc
+
+# Virtual environment
+venv/
+env/
+
+# Exported files
+*.stp
+*.brep
+
+# IDE
+.vscode/
+.idea/
+*.swp

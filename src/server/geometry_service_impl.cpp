@@ -83,6 +83,9 @@ GeometryServiceImpl::GeometryServiceImpl() {
     context_ = new AIS_InteractiveContext(viewer_);
     context_->SetDisplayMode(AIS_Shaded, Standard_False);
     
+    // Initialize session management
+    last_cleanup_ = std::chrono::steady_clock::now();
+    
     spdlog::info("GeometryService: OCCT context initialized successfully");
 }
 
@@ -91,17 +94,76 @@ GeometryServiceImpl::~GeometryServiceImpl() {
 }
 
 std::string GeometryServiceImpl::generateShapeId() {
+    // Deprecated - kept for backward compatibility
+    // New code should use session->generateShapeId()
     return "shape_" + std::to_string(shape_counter_.fetch_add(1));
+}
+
+std::shared_ptr<GeometryServiceImpl::ClientSession> GeometryServiceImpl::getOrCreateSession(const std::string& client_id) {
+    std::lock_guard<std::mutex> lock(sessions_mutex_);
+    
+    // Clean up inactive sessions periodically (every 5 minutes)
+    auto now = std::chrono::steady_clock::now();
+    if (std::chrono::duration_cast<std::chrono::minutes>(now - last_cleanup_).count() >= 5) {
+        cleanupInactiveSessions();
+        last_cleanup_ = now;
+    }
+    
+    // Find or create session
+    auto it = client_sessions_.find(client_id);
+    if (it != client_sessions_.end()) {
+        it->second->updateActivity();
+        return it->second;
+    }
+    
+    // Create new session
+    auto session = std::make_shared<ClientSession>(client_id);
+    client_sessions_[client_id] = session;
+    spdlog::info("GeometryService: Created new session for client: {}", client_id);
+    return session;
+}
+
+void GeometryServiceImpl::cleanupInactiveSessions(std::chrono::minutes timeout) {
+    // Note: Must be called with sessions_mutex_ locked
+    auto now = std::chrono::steady_clock::now();
+    auto it = client_sessions_.begin();
+    while (it != client_sessions_.end()) {
+        auto duration = std::chrono::duration_cast<std::chrono::minutes>(now - it->second->last_activity);
+        if (duration >= timeout) {
+            spdlog::info("GeometryService: Removing inactive session for client: {} (inactive for {} minutes)", 
+                        it->first, duration.count());
+            it = client_sessions_.erase(it);
+        } else {
+            ++it;
+        }
+    }
+}
+
+std::string GeometryServiceImpl::getClientId(grpc::ServerContext* context) const {
+    if (!context) {
+        return "Unknown";
+    }
+    
+    auto metadata = context->client_metadata();
+    auto it = metadata.find("client-id");
+    if (it != metadata.end()) {
+        return std::string(it->second.data(), it->second.length());
+    }
+    return "Unknown";
 }
 
 grpc::Status GeometryServiceImpl::CreateBox(grpc::ServerContext* context,
                                            const geometry::BoxRequest* request,
                                            geometry::ShapeResponse* response) {
     try {
-        spdlog::info("CreateBox: width={}, height={}, depth={}", 
-                    request->width(), request->height(), request->depth());
+        std::string client_id = getClientId(context);
+        spdlog::info("[{}] CreateBox: width={}, height={}, depth={}", 
+                    client_id, request->width(), request->height(), request->depth());
         
-        std::string shape_id = generateShapeId();
+        // Get or create session for this client
+        auto session = getOrCreateSession(client_id);
+        
+        std::string shape_id = session->generateShapeId();
         Handle(AIS_Shape) ais_shape = createBoxShape(*request);
         
         if (ais_shape.IsNull()) {
@@ -110,14 +172,14 @@ grpc::Status GeometryServiceImpl::CreateBox(grpc::ServerContext* context,
             return grpc::Status::OK;
         }
         
-        // Store shape data
+        // Store shape data in session
         ShapeData shape_data;
         shape_data.ais_shape = ais_shape;
         shape_data.topo_shape = ais_shape->Shape();
         shape_data.color = request->color();
         shape_data.shape_id = shape_id;
         
-        shapes_[shape_id] = std::move(shape_data);
+        session->shapes[shape_id] = std::move(shape_data);
         
         // Set response
         response->set_shape_id(shape_id);
@@ -132,7 +194,8 @@ grpc::Status GeometryServiceImpl::CreateBox(grpc::ServerContext* context,
         // properties->set_highlighted(false); // Field removed in simplified proto
         properties->mutable_color()->CopyFrom(request->color());
         
-        spdlog::info("CreateBox: Successfully created box with ID: {}", shape_id);
+        spdlog::info("[{}] CreateBox: Successfully created box with ID: {} (session has {} shapes)", 
+                    client_id, shape_id, session->shapes.size());
         return grpc::Status::OK;
         
     } catch (const std::exception& e) {
@@ -147,10 +210,14 @@ grpc::Status GeometryServiceImpl::CreateCone(grpc::ServerContext* context,
                                             const geometry::ConeRequest* request,
                                             geometry::ShapeResponse* response) {
     try {
-        spdlog::info("CreateCone: base_radius={}, top_radius={}, height={}", 
+        std::string client_id = getClientId(context);
+        spdlog::info("[{}] CreateCone: base_radius={}, top_radius={}, height={}", client_id, 
                     request->base_radius(), request->top_radius(), request->height());
         
-        std::string shape_id = generateShapeId();
+        // Get or create session for this client
+        auto session = getOrCreateSession(client_id);
+        
+        std::string shape_id = session->generateShapeId();
         Handle(AIS_Shape) ais_shape = createConeShape(*request);
         
         if (ais_shape.IsNull()) {
@@ -159,14 +226,14 @@ grpc::Status GeometryServiceImpl::CreateCone(grpc::ServerContext* context,
             return grpc::Status::OK;
         }
         
-        // Store shape data
+        // Store shape data in session
         ShapeData shape_data;
         shape_data.ais_shape = ais_shape;
         shape_data.topo_shape = ais_shape->Shape();
         shape_data.color = request->color();
         shape_data.shape_id = shape_id;
         
-        shapes_[shape_id] = std::move(shape_data);
+        session->shapes[shape_id] = std::move(shape_data);
         
         // Set response
         response->set_shape_id(shape_id);
@@ -181,7 +248,8 @@ grpc::Status GeometryServiceImpl::CreateCone(grpc::ServerContext* context,
         // properties->set_highlighted(false); // Field removed in simplified proto
         properties->mutable_color()->CopyFrom(request->color());
         
-        spdlog::info("CreateCone: Successfully created cone with ID: {}", shape_id);
+        spdlog::info("[{}] CreateCone: Successfully created cone with ID: {} (session has {} shapes)", 
+                    client_id, shape_id, session->shapes.size());
         return grpc::Status::OK;
         
     } catch (const std::exception& e) {
@@ -263,8 +331,11 @@ Quantity_Color GeometryServiceImpl::fromProtoColor(const geometry::Color& color)
 grpc::Status GeometryServiceImpl::GetSystemInfo(grpc::ServerContext* context,
                                                const geometry::EmptyRequest* request,
                                                geometry::SystemInfoResponse* response) {
+    std::string client_id = getClientId(context);
+    auto session = getOrCreateSession(client_id);
+    
     response->set_version("1.0.0");
-    response->set_active_shapes(static_cast<int32_t>(shapes_.size()));
+    response->set_active_shapes(static_cast<int32_t>(session->shapes.size()));
     
     // Use OCCT version from CMake compile definition
 #ifdef OCCT_VERSION
@@ -273,7 +344,15 @@ grpc::Status GeometryServiceImpl::GetSystemInfo(grpc::ServerContext* context,
     response->set_occt_version("Unknown");
 #endif
     
-    spdlog::info("GetSystemInfo: Returning system information");
+    // Add session info to log
+    size_t total_sessions = 0;
+    {
+        std::lock_guard<std::mutex> lock(sessions_mutex_);
+        total_sessions = client_sessions_.size();
+    }
+    
+    spdlog::info("[{}] GetSystemInfo: Session has {} shapes, total {} active sessions", 
+                client_id, session->shapes.size(), total_sessions);
     return grpc::Status::OK;
 }
 
@@ -283,9 +362,13 @@ grpc::Status GeometryServiceImpl::CreateSphere(grpc::ServerContext* context,
                                               const geometry::SphereRequest* request,
                                               geometry::ShapeResponse* response) {
     try {
-        spdlog::info("CreateSphere: radius={}", request->radius());
+        std::string client_id = getClientId(context);
+        spdlog::info("[{}] CreateSphere: radius={}", client_id, request->radius());
         
-        std::string shape_id = generateShapeId();
+        // Get or create session for this client
+        auto session = getOrCreateSession(client_id);
+        
+        std::string shape_id = session->generateShapeId();
         Handle(AIS_Shape) ais_shape = createSphereShape(*request);
         
         if (ais_shape.IsNull()) {
@@ -294,21 +377,22 @@ grpc::Status GeometryServiceImpl::CreateSphere(grpc::ServerContext* context,
             return grpc::Status::OK;
         }
         
-        // Store shape data
+        // Store shape data in session
         ShapeData shape_data;
         shape_data.ais_shape = ais_shape;
         shape_data.topo_shape = ais_shape->Shape();
         shape_data.color = request->color();
         shape_data.shape_id = shape_id;
         
-        shapes_[shape_id] = std::move(shape_data);
+        session->shapes[shape_id] = std::move(shape_data);
         
         // Build response
         response->set_success(true);
         response->set_shape_id(shape_id);
         response->set_message("Sphere created successfully");
         
-        spdlog::info("CreateSphere: Successfully created sphere with ID: {}", shape_id);
+        spdlog::info("[{}] CreateSphere: Successfully created sphere with ID: {} (session has {} shapes)", 
+                    client_id, shape_id, session->shapes.size());
         return grpc::Status::OK;
         
     } catch (const std::exception& e) {
@@ -323,9 +407,13 @@ grpc::Status GeometryServiceImpl::CreateCylinder(grpc::ServerContext* context,
                                                 const geometry::CylinderRequest* request,
                                                 geometry::ShapeResponse* response) {
     try {
-        spdlog::info("CreateCylinder: radius={}, height={}", request->radius(), request->height());
+        std::string client_id = getClientId(context);
+        spdlog::info("[{}] CreateCylinder: radius={}, height={}", client_id, request->radius(), request->height());
         
-        std::string shape_id = generateShapeId();
+        // Get or create session for this client
+        auto session = getOrCreateSession(client_id);
+        
+        std::string shape_id = session->generateShapeId();
         Handle(AIS_Shape) ais_shape = createCylinderShape(*request);
         
         if (ais_shape.IsNull()) {
@@ -334,21 +422,22 @@ grpc::Status GeometryServiceImpl::CreateCylinder(grpc::ServerContext* context,
             return grpc::Status::OK;
         }
         
-        // Store shape data
+        // Store shape data in session
         ShapeData shape_data;
         shape_data.ais_shape = ais_shape;
         shape_data.topo_shape = ais_shape->Shape();
         shape_data.color = request->color();
         shape_data.shape_id = shape_id;
         
-        shapes_[shape_id] = std::move(shape_data);
+        session->shapes[shape_id] = std::move(shape_data);
         
         // Build response
         response->set_success(true);
         response->set_shape_id(shape_id);
         response->set_message("Cylinder created successfully");
         
-        spdlog::info("CreateCylinder: Successfully created cylinder with ID: {}", shape_id);
+        spdlog::info("[{}] CreateCylinder: Successfully created cylinder with ID: {} (session has {} shapes)", 
+                    client_id, shape_id, session->shapes.size());
         return grpc::Status::OK;
         
     } catch (const std::exception& e) {
@@ -362,8 +451,23 @@ grpc::Status GeometryServiceImpl::CreateCylinder(grpc::ServerContext* context,
 grpc::Status GeometryServiceImpl::DeleteShape(grpc::ServerContext* context,
                                              const geometry::ShapeRequest* request,
                                              geometry::StatusResponse* response) {
-    response->set_success(false);
-    response->set_message("DeleteShape not implemented yet");
+    std::string client_id = getClientId(context);
+    auto session = getOrCreateSession(client_id);
+    
+    std::string shape_id = request->shape_id();
+    auto it = session->shapes.find(shape_id);
+    if (it == session->shapes.end()) {
+        response->set_success(false);
+        response->set_message("Shape not found in your session: " + shape_id);
+        return grpc::Status::OK;
+    }
+    
+    session->shapes.erase(it);
+    response->set_success(true);
+    response->set_message("Shape deleted successfully: " + shape_id);
+    
+    spdlog::info("[{}] DeleteShape: Deleted shape {} (session now has {} shapes)", 
+                client_id, shape_id, session->shapes.size());
     return grpc::Status::OK;
 }
 
@@ -390,16 +494,19 @@ grpc::Status GeometryServiceImpl::GetMeshData(grpc::ServerContext* context,
         return grpc::Status(grpc::StatusCode::UNAVAILABLE, "Service not connected");
     }
     
+    std::string client_id = getClientId(context);
+    auto session = getOrCreateSession(client_id);
+    
     std::string shape_id = request->shape_id();
-    auto it = shapes_.find(shape_id);
-    if (it == shapes_.end()) {
-        return grpc::Status(grpc::StatusCode::NOT_FOUND, "Shape not found: " + shape_id);
+    auto it = session->shapes.find(shape_id);
+    if (it == session->shapes.end()) {
+        return grpc::Status(grpc::StatusCode::NOT_FOUND, "Shape not found in your session: " + shape_id);
     }
     
     try {
-        spdlog::info("GetMeshData: Extracting mesh for shape: {}", shape_id);
+        spdlog::info("[{}] GetMeshData: Extracting mesh for shape: {}", client_id, shape_id);
         *response = extractMeshData(shape_id);
-        spdlog::info("GetMeshData: Successfully extracted mesh with {} vertices, {} indices", 
+        spdlog::info("[{}] GetMeshData: Successfully extracted mesh with {} vertices, {} indices", client_id, 
                     response->vertices_size(), response->indices_size());
         return grpc::Status::OK;
         
@@ -413,19 +520,22 @@ grpc::Status GeometryServiceImpl::GetAllMeshes(grpc::ServerContext* context,
                                               const geometry::EmptyRequest* request,
                                               grpc::ServerWriter<geometry::MeshData>* writer) {
     try {
-        spdlog::info("GetAllMeshes: Streaming {} shapes", shapes_.size());
+        std::string client_id = getClientId(context);
+        auto session = getOrCreateSession(client_id);
         
-        for (const auto& [shape_id, shape_data] : shapes_) {
+        spdlog::info("[{}] GetAllMeshes: Streaming {} shapes from client session", client_id, session->shapes.size());
+        
+        for (const auto& [shape_id, shape_data] : session->shapes) {
             geometry::MeshData mesh_data = extractMeshData(shape_id);
             if (!writer->Write(mesh_data)) {
                 spdlog::error("GetAllMeshes: Failed to write mesh data for shape: {}", shape_id);
                 break;
             }
-            spdlog::info("GetAllMeshes: Sent mesh for shape: {} ({} vertices)", 
+            spdlog::info("[{}] GetAllMeshes: Sent mesh for shape: {} ({} vertices)", client_id, 
                         shape_id, mesh_data.vertices_size());
         }
         
-        spdlog::info("GetAllMeshes: Completed streaming all meshes");
+        spdlog::info("[{}] GetAllMeshes: Completed streaming all meshes for session", client_id);
         return grpc::Status::OK;
         
     } catch (const std::exception& e) {
@@ -437,10 +547,18 @@ grpc::Status GeometryServiceImpl::GetAllMeshes(grpc::ServerContext* context,
 grpc::Status GeometryServiceImpl::ClearAll(grpc::ServerContext* context,
                                           const geometry::EmptyRequest* request,
                                           geometry::StatusResponse* response) {
-    shapes_.clear();
+    std::string client_id = getClientId(context);
+    
+    // Get session for this client
+    auto session = getOrCreateSession(client_id);
+    
+    // Clear only this client's shapes
+    size_t shapes_cleared = session->shapes.size();
+    session->shapes.clear();
+    
     response->set_success(true);
-    response->set_message("All shapes cleared");
-    spdlog::info("ClearAll: All shapes cleared");
+    response->set_message("Cleared " + std::to_string(shapes_cleared) + " shapes for this session");
+    spdlog::info("[{}] ClearAll: Cleared {} shapes for this client session", client_id, shapes_cleared);
     return grpc::Status::OK;
 }
 
@@ -448,7 +566,8 @@ grpc::Status GeometryServiceImpl::CreateDemoScene(grpc::ServerContext* context,
                                                  const geometry::EmptyRequest* request,
                                                  geometry::StatusResponse* response) {
     try {
-        spdlog::info("CreateDemoScene: Creating demo geometry objects...");
+        std::string client_id = getClientId(context);
+        spdlog::info("[{}] CreateDemoScene: Creating demo geometry objects...", client_id);
         
         int created_count = 0;
         
@@ -474,7 +593,7 @@ grpc::Status GeometryServiceImpl::CreateDemoScene(grpc::ServerContext* context,
             grpc::Status status = CreateBox(context, &box_request, &box_response);
             if (status.ok() && box_response.success()) {
                 created_count++;
-                spdlog::info("CreateDemoScene: Created demo box with ID: {}", box_response.shape_id());
+                spdlog::info("[{}] CreateDemoScene: Created demo box with ID: {}", client_id, box_response.shape_id());
             }
         }
         
@@ -505,14 +624,14 @@ grpc::Status GeometryServiceImpl::CreateDemoScene(grpc::ServerContext* context,
             grpc::Status status = CreateCone(context, &cone_request, &cone_response);
             if (status.ok() && cone_response.success()) {
                 created_count++;
-                spdlog::info("CreateDemoScene: Created demo cone with ID: {}", cone_response.shape_id());
+                spdlog::info("[{}] CreateDemoScene: Created demo cone with ID: {}", client_id, cone_response.shape_id());
             }
         }
         
         response->set_success(true);
         response->set_message("Demo scene created successfully. Created " + std::to_string(created_count) + " objects.");
         
-        spdlog::info("CreateDemoScene: Successfully created demo scene with {} objects", created_count);
+        spdlog::info("[{}] CreateDemoScene: Successfully created demo scene with {} objects", client_id, created_count);
         return grpc::Status::OK;
         
     } catch (const std::exception& e) {
@@ -528,13 +647,30 @@ geometry::MeshData GeometryServiceImpl::extractMeshData(const std::string& shape
     mesh_data.set_shape_id(shape_id);
     // mesh_data.set_version(1); // Field removed in simplified proto
     
+    // Try to find shape in any session (for backward compatibility)
+    // First check deprecated global shapes_
+    const ShapeData* shape_data_ptr = nullptr;
     auto it = shapes_.find(shape_id);
-    if (it == shapes_.end()) {
+    if (it != shapes_.end()) {
+        shape_data_ptr = &it->second;
+    } else {
+        // Search through all sessions
+        std::lock_guard<std::mutex> lock(sessions_mutex_);
+        for (const auto& [client_id, session] : client_sessions_) {
+            auto session_it = session->shapes.find(shape_id);
+            if (session_it != session->shapes.end()) {
+                shape_data_ptr = &session_it->second;
+                break;
+            }
+        }
+    }
+    
+    if (!shape_data_ptr) {
         spdlog::error("extractMeshData: Shape not found: {}", shape_id);
         return mesh_data;
     }
     
-    const ShapeData& shape_data = it->second;
+    const ShapeData& shape_data = *shape_data_ptr;
     const TopoDS_Shape& shape = shape_data.topo_shape;
     
     // Generate mesh if not already done
@@ -689,11 +825,34 @@ Handle(AIS_Shape) GeometryServiceImpl::createCylinderShape(const geometry::Cylin
 grpc::Status GeometryServiceImpl::ImportModelFile(grpc::ServerContext* context,
                                                  const geometry::ModelFileRequest* request,
                                                  geometry::ModelImportResponse* response) {
-    spdlog::info("ImportModelFile: Importing file: {}", request->file_path());
+    std::string client_id = getClientId(context);
+    spdlog::info("[{}] ImportModelFile: Importing file: {}", client_id, request->file_path());
+    
+    // Get or create session for this client
+    auto session = getOrCreateSession(client_id);
     
     try {
+        // We need to pass session context to the internal methods
+        // For now, temporarily store in global shapes_ and then move to session
         std::vector<std::string> shape_ids = importModelFileInternal(
             request->file_path(), request->options());
+        
+        // Move shapes from global to session
+        for (const auto& shape_id : shape_ids) {
+            auto it = shapes_.find(shape_id);
+            if (it != shapes_.end()) {
+                // Generate new session-specific ID
+                std::string new_shape_id = session->generateShapeId();
+                ShapeData shape_data = std::move(it->second);
+                shape_data.shape_id = new_shape_id;
+                session->shapes[new_shape_id] = std::move(shape_data);
+                shapes_.erase(it);
+                
+                // Update the shape_ids vector with new IDs
+                auto& mutable_ids = const_cast<std::vector<std::string>&>(shape_ids);
+                std::replace(mutable_ids.begin(), mutable_ids.end(), shape_id, new_shape_id);
+            }
+        }
         
         response->set_success(true);
         response->set_message("Model file imported successfully");
@@ -710,8 +869,8 @@ grpc::Status GeometryServiceImpl::ImportModelFile(grpc::ServerContext* context,
             request->file_path(), "", shape_ids.size(), detected_format);
         response->mutable_file_info()->CopyFrom(file_info);
         
-        spdlog::info("ImportModelFile: Successfully imported {} shapes from {} (format: {})", 
-                    shape_ids.size(), request->file_path(), detected_format);
+        spdlog::info("[{}] ImportModelFile: Successfully imported {} shapes from {} (format: {}, session has {} total shapes)", 
+                    client_id, shape_ids.size(), request->file_path(), detected_format, session->shapes.size());
         
     } catch (const std::exception& e) {
         response->set_success(false);
@@ -726,7 +885,10 @@ grpc::Status GeometryServiceImpl::ImportModelFile(grpc::ServerContext* context,
 grpc::Status GeometryServiceImpl::ExportModelFile(grpc::ServerContext* context,
                                                  const geometry::ModelExportRequest* request,
                                                  geometry::ModelFileResponse* response) {
-    spdlog::info("ExportModelFile: Exporting {} shapes to format: {}", 
+    std::string client_id = getClientId(context);
+    auto session = getOrCreateSession(client_id);
+    
+    spdlog::info("[{}] ExportModelFile: Exporting {} shapes to format: {}", client_id, 
                 request->shape_ids_size(), request->options().format());
     
     try {
@@ -734,7 +896,22 @@ grpc::Status GeometryServiceImpl::ExportModelFile(grpc::ServerContext* context,
         std::string model_data;
         geometry::ModelFileInfo file_info;
         
+        // Temporarily copy session shapes to global shapes_ for export
+        std::vector<std::string> temp_added;
+        for (const auto& shape_id : shape_ids) {
+            auto it = session->shapes.find(shape_id);
+            if (it != session->shapes.end() && shapes_.find(shape_id) == shapes_.end()) {
+                shapes_[shape_id] = it->second;
+                temp_added.push_back(shape_id);
+            }
+        }
+        
         bool success = exportModelFileInternal(shape_ids, request->options(), model_data, file_info);
+        
+        // Clean up temporary shapes
+        for (const auto& shape_id : temp_added) {
+            shapes_.erase(shape_id);
+        }
         
         if (success) {
             response->set_success(true);
@@ -743,7 +920,7 @@ grpc::Status GeometryServiceImpl::ExportModelFile(grpc::ServerContext* context,
             response->set_filename(file_info.filename());
             response->mutable_file_info()->CopyFrom(file_info);
             
-            spdlog::info("ExportModelFile: Successfully exported {} shapes to {} format, size: {} bytes", 
+            spdlog::info("[{}] ExportModelFile: Successfully exported {} shapes to {} format, size: {} bytes", client_id, 
                         shape_ids.size(), request->options().format(), model_data.size());
         } else {
             response->set_success(false);
@@ -757,7 +934,33 @@ grpc::Status GeometryServiceImpl::ExportModelFile(grpc::ServerContext* context,
     }
     
     return grpc::Status::OK;
-}// This file contains the unified model import/export helper method implementations
+}
+
+grpc::Status GeometryServiceImpl::DisconnectClient(grpc::ServerContext* context,
+                                                  const geometry::EmptyRequest* request,
+                                                  geometry::StatusResponse* response) {
+    std::string client_id = getClientId(context);
+    
+    // Remove client session if it exists
+    {
+        std::lock_guard<std::mutex> lock(sessions_mutex_);
+        auto it = client_sessions_.find(client_id);
+        if (it != client_sessions_.end()) {
+            size_t shape_count = it->second->shapes.size();
+            client_sessions_.erase(it);
+            spdlog::info("[{}] DisconnectClient: Session removed, cleared {} shapes, {} active sessions remaining", 
+                        client_id, shape_count, client_sessions_.size());
+        } else {
+            spdlog::warn("[{}] DisconnectClient: No active session found for client", client_id);
+        }
+    }
+    
+    response->set_success(true);
+    response->set_message("Client disconnected successfully");
+    return grpc::Status::OK;
+}
+
+// This file contains the unified model import/export helper method implementations
 // It will be appended to geometry_service_impl.cpp
 
 // =============================================================================

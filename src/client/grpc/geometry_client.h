@@ -16,12 +16,14 @@ struct MeshRenderData;
 
 class GeometryClient {
 public:
-    explicit GeometryClient(const std::string& server_address = "localhost:50051");
+    explicit GeometryClient(const std::string& server_address = "localhost:50051", 
+                           const std::string& client_id = "CPP-ImGui");
     ~GeometryClient();
 
     // Connection management
     bool Connect();
     void Disconnect();
+    bool DisconnectFromServer(); // Notify server of disconnection
     bool IsConnected() const;
 
     // Geometry operations
@@ -174,6 +176,7 @@ public:
 
 private:
     std::string server_address_;
+    std::string client_id_;
     std::shared_ptr<grpc::Channel> channel_;
     std::unique_ptr<geometry::GeometryService::Stub> stub_;
     bool connected_;
@@ -181,6 +184,7 @@ private:
     ShapeUpdateCallback update_callback_;
     
     // Helper methods
+    void AddClientMetadata(grpc::ClientContext& context) const;
     geometry::Point3D CreatePoint3D(double x, double y, double z);
     geometry::Vector3D CreateVector3D(double x, double y, double z);
     geometry::Color CreateColor(double r, double g, double b, double a = 1.0);

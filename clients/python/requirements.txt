@@ -1,0 +1,15 @@
+# Python gRPC client requirements
+grpcio==1.60.0
+grpcio-tools==1.60.0
+protobuf==4.25.1
+numpy==1.24.3
+
+# Optional: For visualization with matplotlib
+matplotlib==3.7.2
+
+# Optional: For 3D visualization  
+vispy==0.13.0
+pyqt5==5.15.9
+
+# Note: PythonOCC-core is best installed via conda:
+# conda install -c conda-forge pythonocc-core

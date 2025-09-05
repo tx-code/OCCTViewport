@@ -4,6 +4,8 @@
 #include <unordered_map>
 #include <string>
 #include <atomic>
+#include <mutex>
+#include <chrono>
 
 // gRPC and Protocol Buffer includes
 #include "geometry_service.grpc.pb.h"
@@ -93,6 +95,11 @@ public:
                                 const geometry::ModelExportRequest* request,
                                 geometry::ModelFileResponse* response) override;
 
+    // Client session management
+    grpc::Status DisconnectClient(grpc::ServerContext* context,
+                                 const geometry::EmptyRequest* request,
+                                 geometry::StatusResponse* response) override;
+
     // LoadModelFromData removed - not needed for current implementation
 
 private:
@@ -106,8 +113,31 @@ private:
         bool highlighted{false};
     };
 
+    // Client session management
+    struct ClientSession {
+        std::string client_id;
+        std::unordered_map<std::string, ShapeData> shapes;
+        std::atomic<int> shape_counter{0};
+        std::chrono::steady_clock::time_point last_activity;
+        
+        ClientSession(const std::string& id) 
+            : client_id(id)
+            , last_activity(std::chrono::steady_clock::now()) {}
+        
+        void updateActivity() {
+            last_activity = std::chrono::steady_clock::now();
+        }
+        
+        std::string generateShapeId() {
+            return "shape_" + std::to_string(shape_counter.fetch_add(1));
+        }
+    };
+
     // Internal helper methods
-    std::string generateShapeId();
+    std::string getClientId(grpc::ServerContext* context) const;
+    std::string generateShapeId();  // Deprecated - use session->generateShapeId() instead
+    std::shared_ptr<ClientSession> getOrCreateSession(const std::string& client_id);
+    void cleanupInactiveSessions(std::chrono::minutes timeout = std::chrono::minutes(30));
     Handle(AIS_Shape) createBoxShape(const geometry::BoxRequest& request);
     Handle(AIS_Shape) createConeShape(const geometry::ConeRequest& request);
     Handle(AIS_Shape) createSphereShape(const geometry::SphereRequest& request);
@@ -159,8 +189,14 @@ private:
     
 
     // Internal data
-    std::unordered_map<std::string, ShapeData> shapes_;
-    std::atomic<int> shape_counter_{0};
+    std::unordered_map<std::string, ShapeData> shapes_;  // Deprecated - for backward compatibility only
+    std::atomic<int> shape_counter_{0};  // Deprecated - use per-session counter
+    
+    // Session management
+    std::unordered_map<std::string, std::shared_ptr<ClientSession>> client_sessions_;
+    mutable std::mutex sessions_mutex_;  // Protects client_sessions_
+    std::chrono::steady_clock::time_point last_cleanup_;
+    
     bool connected_{true};  // Service connection status
     
     // OCCT context
