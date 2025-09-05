@@ -185,6 +185,7 @@ private:
     
     // Helper methods
     void AddClientMetadata(grpc::ClientContext& context) const;
+    std::string FormatGrpcError(const grpc::Status& status, const std::string& operation) const;
     geometry::Point3D CreatePoint3D(double x, double y, double z);
     geometry::Vector3D CreateVector3D(double x, double y, double z);
     geometry::Color CreateColor(double r, double g, double b, double a = 1.0);

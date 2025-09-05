@@ -31,7 +31,6 @@ bool GeometryClient::Connect() {
         geometry::SystemInfoResponse response;
         grpc::ClientContext context;
         AddClientMetadata(context);
-        AddClientMetadata(context);
         
         // Set a 2-second timeout for connection test
         std::chrono::system_clock::time_point deadline =
@@ -46,9 +45,26 @@ bool GeometryClient::Connect() {
                         response.version(), response.occt_version());
             return true;
         } else {
-            spdlog::error("GeometryClient: Failed to connect: {} - {}", 
-                         static_cast<int>(status.error_code()), status.error_message());
             connected_ = false;
+            // Enhanced error reporting based on gRPC status code
+            switch (status.error_code()) {
+                case grpc::StatusCode::UNAVAILABLE:
+                    spdlog::error("GeometryClient: Server unavailable - check if GeometryServer is running on {}", server_address_);
+                    break;
+                case grpc::StatusCode::DEADLINE_EXCEEDED:
+                    spdlog::error("GeometryClient: Connection timeout - server may be overloaded or network issues");
+                    break;
+                case grpc::StatusCode::PERMISSION_DENIED:
+                    spdlog::error("GeometryClient: Permission denied - check client credentials");
+                    break;
+                case grpc::StatusCode::RESOURCE_EXHAUSTED:
+                    spdlog::error("GeometryClient: Server resources exhausted - try again later");
+                    break;
+                default:
+                    spdlog::error("GeometryClient: Connection failed: {} - {}", 
+                                 static_cast<int>(status.error_code()), status.error_message());
+                    break;
+            }
             return false;
         }
         
@@ -437,7 +453,10 @@ std::vector<GeometryClient::MeshData> GeometryClient::GetAllMeshes() {
         
         grpc::Status status = reader->Finish();
         if (!status.ok()) {
-            spdlog::error("GeometryClient::GetAllMeshes: Stream failed - {}", status.error_message());
+            std::string error_msg = FormatGrpcError(status, "GetAllMeshes");
+            spdlog::error("GeometryClient::GetAllMeshes: {}", error_msg);
+            // Clear partially received data on error to maintain consistency
+            meshes.clear();
         } else {
             spdlog::info("GeometryClient::GetAllMeshes: Successfully received {} meshes, total ~{} bytes", 
                         meshes.size(), total_bytes_received);
@@ -544,6 +563,31 @@ void GeometryClient::SetShapeUpdateCallback(ShapeUpdateCallback callback) {
 void GeometryClient::AddClientMetadata(grpc::ClientContext& context) const {
     // Add client ID to metadata so server can identify the client
     context.AddMetadata("client-id", client_id_);
+}
+
+// Helper function for consistent gRPC error handling
+std::string GeometryClient::FormatGrpcError(const grpc::Status& status, const std::string& operation) const {
+    switch (status.error_code()) {
+        case grpc::StatusCode::OK:
+            return "Success";
+        case grpc::StatusCode::UNAVAILABLE:
+            return operation + " failed: Server unavailable (check if GeometryServer is running)";
+        case grpc::StatusCode::DEADLINE_EXCEEDED:
+            return operation + " failed: Timeout (server may be overloaded)";
+        case grpc::StatusCode::PERMISSION_DENIED:
+            return operation + " failed: Permission denied";
+        case grpc::StatusCode::RESOURCE_EXHAUSTED:
+            return operation + " failed: Server resources exhausted";
+        case grpc::StatusCode::INVALID_ARGUMENT:
+            return operation + " failed: Invalid argument - " + status.error_message();
+        case grpc::StatusCode::NOT_FOUND:
+            return operation + " failed: Resource not found - " + status.error_message();
+        case grpc::StatusCode::INTERNAL:
+            return operation + " failed: Internal server error - " + status.error_message();
+        default:
+            return operation + " failed: " + std::to_string(static_cast<int>(status.error_code())) + 
+                   " - " + status.error_message();
+    }
 }
 
 
